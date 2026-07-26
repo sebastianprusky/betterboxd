@@ -243,7 +243,15 @@ h3 {
 
 .discover-focus {
   display: grid;
-  gap: 18px;
+  gap: 30px;
+}
+
+.discover-focus .sprint,
+.discover-focus .movie-section {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 0;
 }
 
 .section-title {
@@ -266,17 +274,17 @@ h3 {
 
 .sprint-layout {
   display: grid;
-  grid-template-columns: minmax(220px, 300px);
+  grid-template-columns: minmax(220px, 320px);
   justify-content: center;
-  gap: 12px;
+  gap: 14px;
   align-items: stretch;
   text-align: center;
 }
 
 .focus-sprint {
-  width: min(430px, 100%);
+  width: min(460px, 100%);
   justify-self: center;
-  padding: 16px;
+  padding: 0;
 }
 
 .focus-sprint .kicker {
@@ -311,8 +319,10 @@ button.poster:hover,
 }
 
 .focus-sprint .poster.large {
-  width: min(100%, 260px);
+  width: min(100%, 280px);
   justify-self: center;
+  border-radius: 16px;
+  box-shadow: 0 18px 44px rgba(17, 20, 24, 0.14);
 }
 
 .poster img {
@@ -396,24 +406,48 @@ button.poster:hover,
 }
 
 .action-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
   width: 100%;
 }
 
 .action-grid button {
-  min-height: 40px;
+  min-height: 42px;
   border-color: var(--line);
   color: var(--text);
   font-weight: 900;
 }
 
-.action-grid button:last-child,
+.action-grid .skip-button {
+  display: grid;
+  place-items: center;
+  width: 46px;
+  height: 46px;
+  min-height: 0;
+  border-radius: 50%;
+  padding: 0;
+  background: var(--surface);
+  font-size: 1.35rem;
+  box-shadow: 0 8px 24px rgba(17, 20, 24, 0.08);
+}
+
+.action-grid .skip-button:hover {
+  transform: translateX(2px);
+}
+
+.action-grid .watchlist-button,
 .floating-add {
   border-color: var(--accent);
   background: var(--accent);
   color: var(--accent-text);
+}
+
+.action-grid .watchlist-button {
+  min-width: 150px;
+  border-radius: 999px;
+  padding: 0 18px;
 }
 
 .movie-section {
@@ -428,27 +462,31 @@ button.poster:hover,
 }
 
 .profile-title {
-  align-items: end;
+  display: block;
 }
 
-.sort-field {
-  display: grid;
-  gap: 6px;
+.sort-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.sort-tabs button {
+  min-height: 36px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
   color: var(--muted);
-  font-size: 0.78rem;
+  padding: 0 13px;
+  font-size: 0.84rem;
   font-weight: 900;
 }
 
-.sort-field select {
-  min-height: 42px;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  background: var(--surface);
+.sort-tabs button.is-active,
+.sort-tabs button:hover {
+  border-color: var(--text);
   color: var(--text);
-  padding: 0 34px 0 12px;
-  font: inherit;
-  font-size: 0.9rem;
-  font-weight: 850;
 }
 
 .movie-grid {
@@ -505,6 +543,8 @@ button.poster:hover,
   min-width: 0;
   min-height: 36px;
   border-color: var(--line);
+  border-radius: 12px;
+  background: transparent;
   color: var(--text);
   font-size: 0.82rem;
   font-weight: 900;
@@ -563,26 +603,26 @@ button.poster:hover,
 
 .floating-add {
   position: fixed;
-  right: 28px;
-  bottom: 28px;
+  right: 30px;
+  bottom: 30px;
   display: grid;
   place-items: center;
-  width: 66px;
-  height: 66px;
+  width: 62px;
+  height: 62px;
   min-height: 0;
-  border: 0;
+  border: 1px solid color-mix(in srgb, var(--accent-strong) 22%, transparent);
   border-radius: 50%;
   padding: 0;
-  box-shadow: var(--shadow);
-  font-size: 2.1rem;
+  box-shadow: 0 14px 34px rgba(17, 20, 24, 0.13);
+  font-size: 2rem;
   font-weight: 950;
   line-height: 1;
   transition: transform 160ms ease, box-shadow 160ms ease;
 }
 
 .floating-add:hover {
-  transform: scale(1.08);
-  box-shadow: 0 18px 48px rgba(17, 20, 24, 0.16);
+  transform: translateY(-2px) scale(1.06);
+  box-shadow: 0 18px 44px rgba(17, 20, 24, 0.18);
 }
 
 .modal-backdrop {
@@ -888,14 +928,14 @@ button.poster:hover,
   }
 
   .focus-sprint {
-    padding: 14px;
+    padding: 0;
   }
 
   .focus-sprint .poster.large {
     width: 220px;
   }
 
-  h3 {
+  .focus-sprint h3 {
     font-size: 1.28rem;
     margin-bottom: 5px;
   }
@@ -912,6 +952,11 @@ button.poster:hover,
 
   .action-grid button {
     min-height: 36px;
+  }
+
+  .action-grid .skip-button {
+    width: 40px;
+    height: 40px;
   }
 }
 

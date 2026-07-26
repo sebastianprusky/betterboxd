@@ -227,6 +227,14 @@ function App() {
     );
   }
 
+  function sortButton(value: ProfileSort, label: string) {
+    return (
+      <button className={profileSort === value ? "is-active" : ""} onClick={() => setProfileSort(value)}>
+        {label}
+      </button>
+    );
+  }
+
   return (
     <div className="app">
       <main className="main">
@@ -270,9 +278,11 @@ function App() {
                       </div>
                       <RatingPicker value={ratings[sprintMovie.id]} onChange={(rating) => rateMovie(sprintMovie, rating)} />
                       <div className="action-grid">
-                        <button onClick={nextSprint}>Skip</button>
-                        <button onClick={() => toggleWatchlist(sprintMovie)}>
-                          {watchlist[sprintMovie.id] ? "Saved" : "Watchlist"}
+                        <button className="skip-button" onClick={nextSprint} aria-label="Skip movie">
+                          <span aria-hidden="true">&gt;</span>
+                        </button>
+                        <button className="watchlist-button" onClick={() => toggleWatchlist(sprintMovie)}>
+                          {watchlist[sprintMovie.id] ? "Saved" : "+ Watchlist"}
                         </button>
                       </div>
                     </div>
@@ -326,16 +336,13 @@ function App() {
                 <div>
                   <p className="kicker">Profile</p>
                   <h2>All watched</h2>
+                  <div className="sort-tabs" aria-label="Sort watched movies">
+                    {sortButton("recentlyWatched", "Recent")}
+                    {sortButton("highestRated", "Highest")}
+                    {sortButton("lowestRated", "Lowest")}
+                    {sortButton("recentlyReleased", "Newest")}
+                  </div>
                 </div>
-                <label className="sort-field">
-                  <span>Sort</span>
-                  <select value={profileSort} onChange={(event) => setProfileSort(event.target.value as ProfileSort)}>
-                    <option value="recentlyWatched">Recently watched</option>
-                    <option value="highestRated">Highest rated</option>
-                    <option value="lowestRated">Lowest rated</option>
-                    <option value="recentlyReleased">Recently released</option>
-                  </select>
-                </label>
               </div>
               <MovieGrid
                 movies={profileMovies}
@@ -345,7 +352,6 @@ function App() {
                 onRate={rateMovie}
                 onWatchlist={toggleWatchlist}
                 onOpen={openMovie}
-                onMarkWatched={markWatched}
               />
               {!profileMovies.length && <p className="empty">Mark a movie watched to start your profile.</p>}
             </section>
@@ -490,7 +496,7 @@ function MovieGrid(props: {
             <span>{movie.year}</span>
           </div>
           <div className="card-actions">
-            <button onClick={() => props.onWatchlist(movie)}>{props.watchlist[movie.id] ? "Saved" : "+ List"}</button>
+            <button onClick={() => props.onWatchlist(movie)}>{props.watchlist[movie.id] ? "Saved" : "Add to list"}</button>
             {props.onMarkWatched && (
               <button onClick={() => props.onMarkWatched?.(movie)}>{props.watched?.[movie.id] ? "Watched" : "Mark watched"}</button>
             )}
