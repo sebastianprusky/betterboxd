@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { fallbackMovies } from "./data/fallbackMovies";
 import { getMovieDetails, getTrendingMovies, hasTmdbKey, posterUrl, searchMovies } from "./services/tmdb";
-import type { Movie, RatingMap, ReviewMap, Tab, Theme, WatchlistMap } from "./types";
+import type { Movie, ProfileSort, RatingMap, ReviewMap, Tab, Theme, WatchedMap, WatchlistMap } from "./types";
 
 const ratingsKey = "betterboxd-ratings";
 const watchlistKey = "betterboxd-watchlist";
 const reviewsKey = "betterboxd-reviews";
 const themeKey = "betterboxd-theme";
+const watchedKey = "betterboxd-watched";
 
 const initialRatings: RatingMap = {
   "496243": 4.5,
@@ -17,10 +18,6 @@ const initialRatings: RatingMap = {
 function readJson<T>(key: string, fallback: T, legacyKey?: string): T {
   const value = localStorage.getItem(key) || (legacyKey ? localStorage.getItem(legacyKey) : null);
   return value ? JSON.parse(value) : fallback;
-}
-
-function ratingLabel(rating?: number) {
-  return rating ? `${rating.toFixed(rating % 1 ? 1 : 0)}★` : "Rate";
 }
 
 function getTopGenre(ratings: RatingMap, movies: Movie[]) {
@@ -57,7 +54,9 @@ function App() {
   const [theme, setTheme] = useState<Theme>(() => readJson(themeKey, "light", "cinecircle-theme"));
   const [ratings, setRatings] = useState<RatingMap>(() => readJson(ratingsKey, initialRatings, "cinecircle-ratings"));
   const [watchlist, setWatchlist] = useState<WatchlistMap>(() => readJson(watchlistKey, {}, "cinecircle-watchlist"));
+  const [watched, setWatched] = useState<WatchedMap>(() => readJson(watchedKey, {}));
   const [reviews, setReviews] = useState<ReviewMap>(() => readJson(reviewsKey, {}));
+  const [profileSort, setProfileSort] = useState<ProfileSort>("recentlyWatched");
   const [movies, setMovies] = useState<Movie[]>(fallbackMovies);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<Movie[]>([]);
@@ -83,6 +82,10 @@ function App() {
   }, [watchlist]);
 
   useEffect(() => {
+    localStorage.setItem(watchedKey, JSON.stringify(watched));
+  }, [watched]);
+
+  useEffect(() => {
     localStorage.setItem(reviewsKey, JSON.stringify(reviews));
   }, [reviews]);
 
@@ -106,20 +109,45 @@ function App() {
 
   const allKnownMovies = useMemo(() => {
     const map = new Map<number, Movie>();
-    [...fallbackMovies, ...movies, ...searchResults, ...quickResults, ...Object.values(watchlist), ...(detailMovie ? [detailMovie] : [])].forEach((movie) =>
-      map.set(movie.id, movie)
-    );
+    [
+      ...fallbackMovies,
+      ...movies,
+      ...searchResults,
+      ...quickResults,
+      ...Object.values(watchlist),
+      ...Object.values(watched).map((entry) => entry.movie),
+      ...(detailMovie ? [detailMovie] : []),
+    ].forEach((movie) => map.set(movie.id, movie));
     return [...map.values()];
-  }, [movies, searchResults, quickResults, watchlist, detailMovie]);
+  }, [movies, searchResults, quickResults, watchlist, watched, detailMovie]);
 
   const recommendations = useMemo(() => recommendMovies(ratings, allKnownMovies), [ratings, allKnownMovies]);
   const topGenre = useMemo(() => getTopGenre(ratings, allKnownMovies), [ratings, allKnownMovies]);
   const sprintQueue = recommendations.length ? recommendations : movies.filter((movie) => !ratings[movie.id]);
   const sprintMovie = sprintQueue[sprintIndex % Math.max(sprintQueue.length, 1)];
-  const ratedMovies = allKnownMovies.filter((movie) => ratings[movie.id]).sort((a, b) => ratings[b.id] - ratings[a.id]);
+  const profileMovies = useMemo(() => {
+    const map = new Map<number, Movie>();
+    Object.values(watched).forEach((entry) => map.set(entry.movie.id, entry.movie));
+    allKnownMovies.filter((movie) => ratings[movie.id]).forEach((movie) => map.set(movie.id, movie));
+
+    return [...map.values()].sort((a, b) => {
+      if (profileSort === "highestRated") return (ratings[b.id] || -1) - (ratings[a.id] || -1);
+      if (profileSort === "lowestRated") return (ratings[a.id] || 6) - (ratings[b.id] || 6);
+      if (profileSort === "recentlyReleased") return Number(b.year || 0) - Number(a.year || 0);
+      return (watched[b.id]?.watchedAt || 0) - (watched[a.id]?.watchedAt || 0);
+    });
+  }, [allKnownMovies, profileSort, ratings, watched]);
 
   function rateMovie(movie: Movie, rating: number) {
     setRatings((current) => ({ ...current, [movie.id]: rating }));
+    markWatched(movie);
+  }
+
+  function markWatched(movie: Movie) {
+    setWatched((current) => ({
+      ...current,
+      [movie.id]: { movie, watchedAt: Date.now() },
+    }));
     setWatchlist((current) => {
       const next = { ...current };
       delete next[movie.id];
@@ -134,6 +162,15 @@ function App() {
       return next;
     });
     setReviews((current) => {
+      const next = { ...current };
+      delete next[movie.id];
+      return next;
+    });
+  }
+
+  function removeWatched(movie: Movie) {
+    removeRating(movie);
+    setWatched((current) => {
       const next = { ...current };
       delete next[movie.id];
       return next;
@@ -208,59 +245,51 @@ function App() {
 
         {tab === "discover" && (
           <section className="screen">
-            <section className="command-bar" aria-label="Quick actions">
-              <button className="command-search" onClick={() => setTab("search")}>
-                <span>Search any movie</span>
-                <kbd>⌘K</kbd>
-              </button>
-            </section>
-
             <div className="discover-focus">
-                <section className="sprint focus-sprint">
-                  <div className="section-title">
-                    <div>
-                      <p className="kicker">Taste Sprint</p>
-                      <h2>Rate a few, improve every recommendation.</h2>
-                    </div>
-                    <span>{Object.keys(ratings).length} rated</span>
+              <section className="sprint focus-sprint">
+                <div className="section-title">
+                  <div>
+                    <p className="kicker">Taste Sprint</p>
+                    <h2>Rate movies fast.</h2>
                   </div>
-                  {sprintMovie && (
-                    <div className="sprint-layout">
-                      <Poster movie={sprintMovie} large onOpen={openMovie} />
-                      <div className="sprint-copy">
-                        <div>
-                          <button className="title-button" onClick={() => openMovie(sprintMovie)}>
-                            <h3>{sprintMovie.title}</h3>
-                          </button>
-                          <p>{sprintMovie.overview}</p>
-                        </div>
-                        <div className="genre-row">
-                          {sprintMovie.genres.slice(0, 3).map((genre) => (
-                            <span key={genre}>{genre}</span>
-                          ))}
-                        </div>
-                        <RatingPicker value={ratings[sprintMovie.id]} onChange={(rating) => rateMovie(sprintMovie, rating)} />
-                        <div className="action-grid">
-                          <button onClick={nextSprint}>Skip</button>
-                          <button onClick={() => toggleWatchlist(sprintMovie)}>
-                            {watchlist[sprintMovie.id] ? "Saved" : "Watchlist"}
-                          </button>
-                        </div>
+                </div>
+                {sprintMovie && (
+                  <div className="sprint-layout">
+                    <Poster movie={sprintMovie} large onOpen={openMovie} />
+                    <div className="sprint-copy">
+                      <div>
+                        <button className="title-button" onClick={() => openMovie(sprintMovie)}>
+                          <h3>{sprintMovie.title}</h3>
+                        </button>
+                        <p>{sprintMovie.year} · {sprintMovie.genres.slice(0, 2).join(", ") || "Movie"}</p>
+                      </div>
+                      <div className="genre-row">
+                        {sprintMovie.genres.slice(0, 3).map((genre) => (
+                          <span key={genre}>{genre}</span>
+                        ))}
+                      </div>
+                      <RatingPicker value={ratings[sprintMovie.id]} onChange={(rating) => rateMovie(sprintMovie, rating)} />
+                      <div className="action-grid">
+                        <button onClick={nextSprint}>Skip</button>
+                        <button onClick={() => toggleWatchlist(sprintMovie)}>
+                          {watchlist[sprintMovie.id] ? "Saved" : "Watchlist"}
+                        </button>
                       </div>
                     </div>
-                  )}
-                </section>
+                  </div>
+                )}
+              </section>
 
-                <MovieSection
-                  title="Recommended for you"
-                  subtitle={`Because your taste leans ${topGenre.toLowerCase()}`}
-                  movies={recommendations}
-                  ratings={ratings}
-                  watchlist={watchlist}
-                  onRate={rateMovie}
-                  onWatchlist={toggleWatchlist}
-                  onOpen={openMovie}
-                />
+              <MovieSection
+                title="Recommended for you"
+                subtitle={`Because your taste leans ${topGenre.toLowerCase()}`}
+                movies={recommendations}
+                ratings={ratings}
+                watchlist={watchlist}
+                onRate={rateMovie}
+                onWatchlist={toggleWatchlist}
+                onOpen={openMovie}
+              />
             </div>
           </section>
         )}
@@ -292,48 +321,34 @@ function App() {
 
         {tab === "profile" && (
           <section className="screen">
-            <section className="profile-head">
-              <div>
-                <p className="kicker">Your taste</p>
-                <h2>{topGenre}</h2>
+            <section className="movie-section profile-list">
+              <div className="section-title profile-title">
+                <div>
+                  <p className="kicker">Profile</p>
+                  <h2>All watched</h2>
+                </div>
+                <label className="sort-field">
+                  <span>Sort</span>
+                  <select value={profileSort} onChange={(event) => setProfileSort(event.target.value as ProfileSort)}>
+                    <option value="recentlyWatched">Recently watched</option>
+                    <option value="highestRated">Highest rated</option>
+                    <option value="lowestRated">Lowest rated</option>
+                    <option value="recentlyReleased">Recently released</option>
+                  </select>
+                </label>
               </div>
-              <div className="stat-row">
-                <Stat label="Rated" value={String(Object.keys(ratings).length)} />
-                <Stat label="Watchlist" value={String(Object.keys(watchlist).length)} />
-                <Stat
-                  label="Average"
-                  value={
-                    Object.values(ratings).length
-                      ? (Object.values(ratings).reduce((sum, rating) => sum + rating, 0) / Object.values(ratings).length).toFixed(1)
-                      : "0"
-                  }
-                />
-              </div>
+              <MovieGrid
+                movies={profileMovies}
+                ratings={ratings}
+                watchlist={watchlist}
+                watched={watched}
+                onRate={rateMovie}
+                onWatchlist={toggleWatchlist}
+                onOpen={openMovie}
+                onMarkWatched={markWatched}
+              />
+              {!profileMovies.length && <p className="empty">Mark a movie watched to start your profile.</p>}
             </section>
-
-            <MovieSection
-              title="Watchlist"
-              subtitle="Rate a movie to mark it watched"
-              movies={Object.values(watchlist)}
-              ratings={ratings}
-              watchlist={watchlist}
-              onRate={rateMovie}
-              onWatchlist={toggleWatchlist}
-              onOpen={openMovie}
-              empty="Your watchlist is empty."
-            />
-
-            <MovieSection
-              title="Recent ratings"
-              subtitle="Reviews and follows will attach here later"
-              movies={ratedMovies.slice(0, 8)}
-              ratings={ratings}
-              watchlist={watchlist}
-              onRate={rateMovie}
-              onWatchlist={toggleWatchlist}
-              onOpen={openMovie}
-              empty="Rate a movie to start your profile."
-            />
           </section>
         )}
       </main>
@@ -345,7 +360,7 @@ function App() {
       </nav>
 
       <button className="floating-add" onClick={() => setQuickAddOpen(true)}>
-        + Watched
+        +
       </button>
 
       {quickAddOpen && (
@@ -375,15 +390,27 @@ function App() {
               ))}
             </div>
             {selectedMovie && (
-              <RatingPicker
-                value={ratings[selectedMovie.id]}
-                onChange={(rating) => {
-                  rateMovie(selectedMovie, rating);
-                  setQuickAddOpen(false);
-                  setQuickQuery("");
-                  setSelectedMovie(null);
-                }}
-              />
+              <div className="quick-add-actions">
+                <button
+                  onClick={() => {
+                    markWatched(selectedMovie);
+                    setQuickAddOpen(false);
+                    setQuickQuery("");
+                    setSelectedMovie(null);
+                  }}
+                >
+                  Mark watched
+                </button>
+                <RatingPicker
+                  value={ratings[selectedMovie.id]}
+                  onChange={(rating) => {
+                    rateMovie(selectedMovie, rating);
+                    setQuickAddOpen(false);
+                    setQuickQuery("");
+                    setSelectedMovie(null);
+                  }}
+                />
+              </div>
             )}
           </section>
         </div>
@@ -396,9 +423,12 @@ function App() {
           rating={ratings[detailMovie.id]}
           review={reviews[detailMovie.id] || ""}
           inWatchlist={Boolean(watchlist[detailMovie.id])}
+          isWatched={Boolean(watched[detailMovie.id])}
           onClose={() => setDetailMovie(null)}
           onRate={(rating) => rateMovie(detailMovie, rating)}
           onRemoveRating={() => removeRating(detailMovie)}
+          onMarkWatched={() => markWatched(detailMovie)}
+          onRemoveWatched={() => removeWatched(detailMovie)}
           onReview={(review) => updateReview(detailMovie, review)}
           onToggleWatchlist={() => toggleWatchlist(detailMovie)}
           onRemoveWatchlist={() => removeFromWatchlist(detailMovie)}
@@ -414,10 +444,12 @@ function MovieSection(props: {
   movies: Movie[];
   ratings: RatingMap;
   watchlist: WatchlistMap;
+  watched?: WatchedMap;
   empty?: string;
   onRate: (movie: Movie, rating: number) => void;
   onWatchlist: (movie: Movie) => void;
   onOpen: (movie: Movie) => void;
+  onMarkWatched?: (movie: Movie) => void;
 }) {
   return (
     <section className="movie-section">
@@ -440,9 +472,11 @@ function MovieGrid(props: {
   movies: Movie[];
   ratings: RatingMap;
   watchlist: WatchlistMap;
+  watched?: WatchedMap;
   onRate: (movie: Movie, rating: number) => void;
   onWatchlist: (movie: Movie) => void;
   onOpen: (movie: Movie) => void;
+  onMarkWatched?: (movie: Movie) => void;
 }) {
   return (
     <div className="movie-grid">
@@ -457,7 +491,9 @@ function MovieGrid(props: {
           </div>
           <div className="card-actions">
             <button onClick={() => props.onWatchlist(movie)}>{props.watchlist[movie.id] ? "Saved" : "+ List"}</button>
-            <button className="rate-chip">{ratingLabel(props.ratings[movie.id])}</button>
+            {props.onMarkWatched && (
+              <button onClick={() => props.onMarkWatched?.(movie)}>{props.watched?.[movie.id] ? "Watched" : "Mark watched"}</button>
+            )}
           </div>
           <RatingPicker compact value={props.ratings[movie.id]} onChange={(rating) => props.onRate(movie, rating)} />
         </article>
@@ -521,24 +557,18 @@ function RatingPicker({
   );
 }
 
-function Stat({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="stat">
-      <span>{label}</span>
-      <strong>{value}</strong>
-    </div>
-  );
-}
-
 function MovieDetailModal({
   movie,
   loading,
   rating,
   review,
   inWatchlist,
+  isWatched,
   onClose,
   onRate,
   onRemoveRating,
+  onMarkWatched,
+  onRemoveWatched,
   onReview,
   onToggleWatchlist,
   onRemoveWatchlist,
@@ -548,9 +578,12 @@ function MovieDetailModal({
   rating?: number;
   review: string;
   inWatchlist: boolean;
+  isWatched: boolean;
   onClose: () => void;
   onRate: (rating: number) => void;
   onRemoveRating: () => void;
+  onMarkWatched: () => void;
+  onRemoveWatched: () => void;
   onReview: (review: string) => void;
   onToggleWatchlist: () => void;
   onRemoveWatchlist: () => void;
@@ -592,7 +625,7 @@ function MovieDetailModal({
               <div className="detail-section-head">
                 <div>
                   <p className="kicker">Your rating</p>
-                  <strong>{ratingLabel(rating)}</strong>
+                  <strong>{rating ? "Rated" : isWatched ? "Watched" : "Not watched"}</strong>
                 </div>
                 {rating && <button onClick={onRemoveRating}>Remove rating</button>}
               </div>
@@ -611,6 +644,8 @@ function MovieDetailModal({
             </section>
 
             <div className="detail-actions">
+              <button onClick={onMarkWatched}>{isWatched ? "Watched" : "Mark watched"}</button>
+              {isWatched && <button onClick={onRemoveWatched}>Remove watched</button>}
               <button onClick={onToggleWatchlist}>{inWatchlist ? "Saved to watchlist" : "Add to watchlist"}</button>
               {inWatchlist && <button onClick={onRemoveWatchlist}>Remove from watchlist</button>}
             </div>
