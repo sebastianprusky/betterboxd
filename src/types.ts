@@ -2,6 +2,8 @@ export type Tab = "discover" | "search" | "profile";
 
 export type Theme = "light" | "dark";
 
+export type Palette = "mint" | "slate" | "rose" | "mono";
+
 export type Movie = {
   id: number;
   title: string;

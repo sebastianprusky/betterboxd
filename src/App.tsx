@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { fallbackMovies } from "./data/fallbackMovies";
 import { getTrendingMovies, hasTmdbKey, posterUrl, searchMovies } from "./services/tmdb";
-import type { Movie, RatingMap, Tab, Theme, WatchlistMap } from "./types";
+import type { Movie, Palette, RatingMap, Tab, Theme, WatchlistMap } from "./types";
 
 const ratingsKey = "betterboxd-ratings";
 const watchlistKey = "betterboxd-watchlist";
 const themeKey = "betterboxd-theme";
+const paletteKey = "betterboxd-palette";
 
 const initialRatings: RatingMap = {
   "496243": 4.5,
@@ -54,6 +55,7 @@ function recommendMovies(ratings: RatingMap, movies: Movie[]) {
 function App() {
   const [tab, setTab] = useState<Tab>("discover");
   const [theme, setTheme] = useState<Theme>(() => readJson(themeKey, "light", "cinecircle-theme"));
+  const [palette, setPalette] = useState<Palette>(() => readJson(paletteKey, "mint"));
   const [ratings, setRatings] = useState<RatingMap>(() => readJson(ratingsKey, initialRatings, "cinecircle-ratings"));
   const [watchlist, setWatchlist] = useState<WatchlistMap>(() => readJson(watchlistKey, {}, "cinecircle-watchlist"));
   const [movies, setMovies] = useState<Movie[]>(fallbackMovies);
@@ -69,6 +71,11 @@ function App() {
     document.documentElement.dataset.theme = theme;
     localStorage.setItem(themeKey, JSON.stringify(theme));
   }, [theme]);
+
+  useEffect(() => {
+    document.documentElement.dataset.palette = palette;
+    localStorage.setItem(paletteKey, JSON.stringify(palette));
+  }, [palette]);
 
   useEffect(() => {
     localStorage.setItem(ratingsKey, JSON.stringify(ratings));
@@ -132,10 +139,11 @@ function App() {
     setSprintIndex((index) => index + 1);
   }
 
-  function navButton(value: Tab, label: string) {
+  function navButton(value: Tab, label: string, meta: string) {
     return (
       <button className={tab === value ? "is-active" : ""} onClick={() => setTab(value)}>
-        {label}
+        <span>{label}</span>
+        <small>{meta}</small>
       </button>
     );
   }
@@ -151,13 +159,19 @@ function App() {
           </div>
         </div>
         <nav className="side-nav">
-          {navButton("discover", "Discover")}
-          {navButton("search", "Search")}
-          {navButton("profile", "Profile")}
+          {navButton("discover", "Discover", "Taste + recs")}
+          {navButton("search", "Search", "TMDB catalog")}
+          {navButton("profile", "Profile", "Stats + watchlist")}
         </nav>
-        <button className="theme-toggle" onClick={() => setTheme(theme === "light" ? "dark" : "light")}>
-          {theme === "light" ? "Dark mode" : "Light mode"}
-        </button>
+        <PalettePicker palette={palette} onChange={setPalette} />
+        <div className="sidebar-footer">
+          <button className="theme-toggle" onClick={() => setTheme(theme === "light" ? "dark" : "light")}>
+            {theme === "light" ? "Dark mode" : "Light mode"}
+          </button>
+          <button className="sidebar-add" onClick={() => setQuickAddOpen(true)}>
+            + Watched
+          </button>
+        </div>
       </aside>
 
       <main className="main">
@@ -166,56 +180,92 @@ function App() {
             <p className="kicker">BetterBoxd</p>
             <h1>{tab === "discover" ? "Discover" : tab === "search" ? "Search" : "Profile"}</h1>
           </div>
-          <button className="theme-toggle compact" onClick={() => setTheme(theme === "light" ? "dark" : "light")}>
-            {theme === "light" ? "Dark" : "Light"}
-          </button>
+          <div className="topbar-actions">
+            <button className="theme-toggle compact" onClick={() => setTheme(theme === "light" ? "dark" : "light")}>
+              {theme === "light" ? "Dark" : "Light"}
+            </button>
+            <button className="topbar-add" onClick={() => setQuickAddOpen(true)}>
+              + Watched
+            </button>
+          </div>
         </header>
 
         {tab === "discover" && (
           <section className="screen">
-            <button className="search-shortcut" onClick={() => setTab("search")}>
-              Search any movie
-            </button>
-
-            <section className="sprint">
-              <div className="section-title">
-                <div>
-                  <p className="kicker">Taste Sprint</p>
-                  <h2>Rate a few, improve every recommendation.</h2>
-                </div>
-                <span>{Object.keys(ratings).length} rated</span>
-              </div>
-              {sprintMovie && (
-                <div className="sprint-layout">
-                  <Poster movie={sprintMovie} large />
-                  <div className="sprint-copy">
-                    <p>{sprintMovie.overview}</p>
-                    <div className="genre-row">
-                      {sprintMovie.genres.slice(0, 3).map((genre) => (
-                        <span key={genre}>{genre}</span>
-                      ))}
-                    </div>
-                    <RatingPicker value={ratings[sprintMovie.id]} onChange={(rating) => rateMovie(sprintMovie, rating)} />
-                    <div className="action-grid">
-                      <button onClick={nextSprint}>Skip</button>
-                      <button onClick={() => toggleWatchlist(sprintMovie)}>
-                        {watchlist[sprintMovie.id] ? "Saved" : "Watchlist"}
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              )}
+            <section className="command-bar" aria-label="Quick actions">
+              <button className="command-search" onClick={() => setTab("search")}>
+                <span>Search any movie</span>
+                <kbd>⌘K</kbd>
+              </button>
+              <button className="command-action" onClick={() => setQuickAddOpen(true)}>
+                Add watched
+              </button>
             </section>
 
-            <MovieSection
-              title="Recommended for you"
-              subtitle={`Because your taste leans ${topGenre.toLowerCase()}`}
-              movies={recommendations}
-              ratings={ratings}
-              watchlist={watchlist}
-              onRate={rateMovie}
-              onWatchlist={toggleWatchlist}
-            />
+            <div className="desktop-dashboard">
+              <div className="primary-column">
+                <section className="sprint">
+                  <div className="section-title">
+                    <div>
+                      <p className="kicker">Taste Sprint</p>
+                      <h2>Rate a few, improve every recommendation.</h2>
+                    </div>
+                    <span>{Object.keys(ratings).length} rated</span>
+                  </div>
+                  {sprintMovie && (
+                    <div className="sprint-layout">
+                      <Poster movie={sprintMovie} large />
+                      <div className="sprint-copy">
+                        <div>
+                          <h3>{sprintMovie.title}</h3>
+                          <p>{sprintMovie.overview}</p>
+                        </div>
+                        <div className="genre-row">
+                          {sprintMovie.genres.slice(0, 3).map((genre) => (
+                            <span key={genre}>{genre}</span>
+                          ))}
+                        </div>
+                        <RatingPicker value={ratings[sprintMovie.id]} onChange={(rating) => rateMovie(sprintMovie, rating)} />
+                        <div className="action-grid">
+                          <button onClick={nextSprint}>Skip</button>
+                          <button onClick={() => toggleWatchlist(sprintMovie)}>
+                            {watchlist[sprintMovie.id] ? "Saved" : "Watchlist"}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </section>
+
+                <MovieSection
+                  title="Recommended for you"
+                  subtitle={`Because your taste leans ${topGenre.toLowerCase()}`}
+                  movies={recommendations}
+                  ratings={ratings}
+                  watchlist={watchlist}
+                  onRate={rateMovie}
+                  onWatchlist={toggleWatchlist}
+                />
+              </div>
+              <aside className="insight-panel">
+                <p className="kicker">Taste profile</p>
+                <h2>{topGenre}</h2>
+                <div className="insight-list">
+                  <div>
+                    <span>Rated</span>
+                    <strong>{Object.keys(ratings).length}</strong>
+                  </div>
+                  <div>
+                    <span>Watchlist</span>
+                    <strong>{Object.keys(watchlist).length}</strong>
+                  </div>
+                  <div>
+                    <span>Best next action</span>
+                    <strong>Rate 5 more</strong>
+                  </div>
+                </div>
+              </aside>
+            </div>
           </section>
         )}
 
@@ -290,12 +340,12 @@ function App() {
       </main>
 
       <nav className="bottom-nav">
-        {navButton("discover", "Discover")}
-        {navButton("search", "Search")}
+        {navButton("discover", "Discover", "")}
+        {navButton("search", "Search", "")}
         <button className="plus-button" onClick={() => setQuickAddOpen(true)} aria-label="Add watched movie">
           +
         </button>
-        {navButton("profile", "Profile")}
+        {navButton("profile", "Profile", "")}
       </nav>
 
       <button className="floating-add" onClick={() => setQuickAddOpen(true)}>
@@ -343,6 +393,34 @@ function App() {
         </div>
       )}
     </div>
+  );
+}
+
+function PalettePicker({ palette, onChange }: { palette: Palette; onChange: (palette: Palette) => void }) {
+  const palettes: Array<{ value: Palette; label: string }> = [
+    { value: "mint", label: "Mint" },
+    { value: "slate", label: "Slate" },
+    { value: "rose", label: "Rose" },
+    { value: "mono", label: "Mono" },
+  ];
+
+  return (
+    <section className="palette-picker" aria-label="Color palette">
+      <p className="kicker">Palette</p>
+      <div>
+        {palettes.map((item) => (
+          <button
+            key={item.value}
+            className={palette === item.value ? "selected" : ""}
+            onClick={() => onChange(item.value)}
+            aria-pressed={palette === item.value}
+          >
+            <span className={`swatch ${item.value}`} />
+            {item.label}
+          </button>
+        ))}
+      </div>
+    </section>
   );
 }
 
