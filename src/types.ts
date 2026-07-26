@@ -11,8 +11,13 @@ export type Movie = {
   overview: string;
   genres: string[];
   voteAverage?: number;
+  runtime?: number;
+  director?: string;
+  cast?: string[];
 };
 
 export type RatingMap = Record<string, number>;
 
 export type WatchlistMap = Record<string, Movie>;
+
+export type ReviewMap = Record<string, string>;

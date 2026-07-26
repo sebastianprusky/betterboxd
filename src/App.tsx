@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { fallbackMovies } from "./data/fallbackMovies";
-import { getTrendingMovies, hasTmdbKey, posterUrl, searchMovies } from "./services/tmdb";
-import type { Movie, RatingMap, Tab, Theme, WatchlistMap } from "./types";
+import { getMovieDetails, getTrendingMovies, hasTmdbKey, posterUrl, searchMovies } from "./services/tmdb";
+import type { Movie, RatingMap, ReviewMap, Tab, Theme, WatchlistMap } from "./types";
 
 const ratingsKey = "betterboxd-ratings";
 const watchlistKey = "betterboxd-watchlist";
+const reviewsKey = "betterboxd-reviews";
 const themeKey = "betterboxd-theme";
 
 const initialRatings: RatingMap = {
@@ -57,6 +58,7 @@ function App() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [ratings, setRatings] = useState<RatingMap>(() => readJson(ratingsKey, initialRatings, "cinecircle-ratings"));
   const [watchlist, setWatchlist] = useState<WatchlistMap>(() => readJson(watchlistKey, {}, "cinecircle-watchlist"));
+  const [reviews, setReviews] = useState<ReviewMap>(() => readJson(reviewsKey, {}));
   const [movies, setMovies] = useState<Movie[]>(fallbackMovies);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<Movie[]>([]);
@@ -65,6 +67,8 @@ function App() {
   const [quickQuery, setQuickQuery] = useState("");
   const [quickResults, setQuickResults] = useState<Movie[]>(fallbackMovies.slice(0, 5));
   const [sprintIndex, setSprintIndex] = useState(0);
+  const [detailMovie, setDetailMovie] = useState<Movie | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -78,6 +82,10 @@ function App() {
   useEffect(() => {
     localStorage.setItem(watchlistKey, JSON.stringify(watchlist));
   }, [watchlist]);
+
+  useEffect(() => {
+    localStorage.setItem(reviewsKey, JSON.stringify(reviews));
+  }, [reviews]);
 
   useEffect(() => {
     getTrendingMovies().then(setMovies).catch(() => setMovies(fallbackMovies));
@@ -99,11 +107,11 @@ function App() {
 
   const allKnownMovies = useMemo(() => {
     const map = new Map<number, Movie>();
-    [...fallbackMovies, ...movies, ...searchResults, ...quickResults, ...Object.values(watchlist)].forEach((movie) =>
+    [...fallbackMovies, ...movies, ...searchResults, ...quickResults, ...Object.values(watchlist), ...(detailMovie ? [detailMovie] : [])].forEach((movie) =>
       map.set(movie.id, movie)
     );
     return [...map.values()];
-  }, [movies, searchResults, quickResults, watchlist]);
+  }, [movies, searchResults, quickResults, watchlist, detailMovie]);
 
   const recommendations = useMemo(() => recommendMovies(ratings, allKnownMovies), [ratings, allKnownMovies]);
   const topGenre = useMemo(() => getTopGenre(ratings, allKnownMovies), [ratings, allKnownMovies]);
@@ -120,6 +128,19 @@ function App() {
     });
   }
 
+  function removeRating(movie: Movie) {
+    setRatings((current) => {
+      const next = { ...current };
+      delete next[movie.id];
+      return next;
+    });
+    setReviews((current) => {
+      const next = { ...current };
+      delete next[movie.id];
+      return next;
+    });
+  }
+
   function toggleWatchlist(movie: Movie) {
     setWatchlist((current) => {
       const next = { ...current };
@@ -127,6 +148,35 @@ function App() {
       else next[movie.id] = movie;
       return next;
     });
+  }
+
+  function removeFromWatchlist(movie: Movie) {
+    setWatchlist((current) => {
+      const next = { ...current };
+      delete next[movie.id];
+      return next;
+    });
+  }
+
+  function updateReview(movie: Movie, review: string) {
+    setReviews((current) => {
+      const next = { ...current };
+      if (review.trim()) next[movie.id] = review;
+      else delete next[movie.id];
+      return next;
+    });
+  }
+
+  async function openMovie(movie: Movie) {
+    setDetailMovie(movie);
+    setDetailLoading(true);
+    try {
+      setDetailMovie(await getMovieDetails(movie));
+    } catch {
+      setDetailMovie(movie);
+    } finally {
+      setDetailLoading(false);
+    }
   }
 
   function nextSprint() {
@@ -200,10 +250,12 @@ function App() {
                   </div>
                   {sprintMovie && (
                     <div className="sprint-layout">
-                      <Poster movie={sprintMovie} large />
+                      <Poster movie={sprintMovie} large onOpen={openMovie} />
                       <div className="sprint-copy">
                         <div>
-                          <h3>{sprintMovie.title}</h3>
+                          <button className="title-button" onClick={() => openMovie(sprintMovie)}>
+                            <h3>{sprintMovie.title}</h3>
+                          </button>
                           <p>{sprintMovie.overview}</p>
                         </div>
                         <div className="genre-row">
@@ -231,6 +283,7 @@ function App() {
                   watchlist={watchlist}
                   onRate={rateMovie}
                   onWatchlist={toggleWatchlist}
+                  onOpen={openMovie}
                 />
               </div>
               <aside className="insight-panel">
@@ -275,6 +328,7 @@ function App() {
               watchlist={watchlist}
               onRate={rateMovie}
               onWatchlist={toggleWatchlist}
+              onOpen={openMovie}
             />
           </section>
         )}
@@ -308,6 +362,7 @@ function App() {
               watchlist={watchlist}
               onRate={rateMovie}
               onWatchlist={toggleWatchlist}
+              onOpen={openMovie}
               empty="Your watchlist is empty."
             />
 
@@ -319,6 +374,7 @@ function App() {
               watchlist={watchlist}
               onRate={rateMovie}
               onWatchlist={toggleWatchlist}
+              onOpen={openMovie}
               empty="Rate a movie to start your profile."
             />
           </section>
@@ -375,6 +431,22 @@ function App() {
           </section>
         </div>
       )}
+
+      {detailMovie && (
+        <MovieDetailModal
+          movie={detailMovie}
+          loading={detailLoading}
+          rating={ratings[detailMovie.id]}
+          review={reviews[detailMovie.id] || ""}
+          inWatchlist={Boolean(watchlist[detailMovie.id])}
+          onClose={() => setDetailMovie(null)}
+          onRate={(rating) => rateMovie(detailMovie, rating)}
+          onRemoveRating={() => removeRating(detailMovie)}
+          onReview={(review) => updateReview(detailMovie, review)}
+          onToggleWatchlist={() => toggleWatchlist(detailMovie)}
+          onRemoveWatchlist={() => removeFromWatchlist(detailMovie)}
+        />
+      )}
     </div>
   );
 }
@@ -388,6 +460,7 @@ function MovieSection(props: {
   empty?: string;
   onRate: (movie: Movie, rating: number) => void;
   onWatchlist: (movie: Movie) => void;
+  onOpen: (movie: Movie) => void;
 }) {
   return (
     <section className="movie-section">
@@ -412,14 +485,17 @@ function MovieGrid(props: {
   watchlist: WatchlistMap;
   onRate: (movie: Movie, rating: number) => void;
   onWatchlist: (movie: Movie) => void;
+  onOpen: (movie: Movie) => void;
 }) {
   return (
     <div className="movie-grid">
       {props.movies.map((movie) => (
         <article className="movie-card" key={movie.id}>
-          <Poster movie={movie} />
+          <Poster movie={movie} onOpen={props.onOpen} />
           <div className="movie-info">
-            <strong>{movie.title}</strong>
+            <button className="movie-title-button" onClick={() => props.onOpen(movie)}>
+              <strong>{movie.title}</strong>
+            </button>
             <span>{movie.year}</span>
           </div>
           <div className="card-actions">
@@ -433,12 +509,20 @@ function MovieGrid(props: {
   );
 }
 
-function Poster({ movie, large = false }: { movie: Movie; large?: boolean }) {
+function Poster({ movie, large = false, onOpen }: { movie: Movie; large?: boolean; onOpen?: (movie: Movie) => void }) {
   const url = posterUrl(movie.posterPath, large ? "w780" : "w342");
-  return (
-    <div className={large ? "poster large" : "poster"}>
+  const content = (
+    <>
       {url ? <img src={url} alt={`${movie.title} poster`} /> : <span>{movie.title}</span>}
-    </div>
+    </>
+  );
+
+  return onOpen ? (
+    <button className={large ? "poster large" : "poster"} onClick={() => onOpen(movie)} aria-label={`Open ${movie.title}`}>
+      {content}
+    </button>
+  ) : (
+    <div className={large ? "poster large" : "poster"}>{content}</div>
   );
 }
 
@@ -473,6 +557,97 @@ function Stat({ label, value }: { label: string; value: string }) {
     <div className="stat">
       <span>{label}</span>
       <strong>{value}</strong>
+    </div>
+  );
+}
+
+function MovieDetailModal({
+  movie,
+  loading,
+  rating,
+  review,
+  inWatchlist,
+  onClose,
+  onRate,
+  onRemoveRating,
+  onReview,
+  onToggleWatchlist,
+  onRemoveWatchlist,
+}: {
+  movie: Movie;
+  loading: boolean;
+  rating?: number;
+  review: string;
+  inWatchlist: boolean;
+  onClose: () => void;
+  onRate: (rating: number) => void;
+  onRemoveRating: () => void;
+  onReview: (review: string) => void;
+  onToggleWatchlist: () => void;
+  onRemoveWatchlist: () => void;
+}) {
+  const runtime = movie.runtime ? `${movie.runtime} min` : "Runtime unavailable";
+
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
+      <section className="movie-detail" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>
+        <div className="detail-head">
+          <div>
+            <p className="kicker">{loading ? "Loading details" : "Movie details"}</p>
+            <h2>{movie.title}</h2>
+          </div>
+          <button onClick={onClose}>Close</button>
+        </div>
+
+        <div className="detail-layout">
+          <Poster movie={movie} large />
+          <div className="detail-body">
+            <div className="detail-meta">
+              <span>{movie.year}</span>
+              <span>{runtime}</span>
+              <span>{movie.genres.slice(0, 3).join(", ") || "Genres unavailable"}</span>
+            </div>
+            <p>{movie.overview}</p>
+            <div className="detail-facts">
+              <div>
+                <span>Director</span>
+                <strong>{movie.director || "Unavailable"}</strong>
+              </div>
+              <div>
+                <span>Cast</span>
+                <strong>{movie.cast?.join(", ") || "Unavailable"}</strong>
+              </div>
+            </div>
+
+            <section className="detail-section">
+              <div className="detail-section-head">
+                <div>
+                  <p className="kicker">Your rating</p>
+                  <strong>{ratingLabel(rating)}</strong>
+                </div>
+                {rating && <button onClick={onRemoveRating}>Remove rating</button>}
+              </div>
+              <RatingPicker value={rating} onChange={onRate} />
+            </section>
+
+            <section className="detail-section">
+              <label className="review-field">
+                <span>Review note</span>
+                <textarea
+                  value={review}
+                  onChange={(event) => onReview(event.target.value)}
+                  placeholder="Write a quick thought. Reviews will become public/social later."
+                />
+              </label>
+            </section>
+
+            <div className="detail-actions">
+              <button onClick={onToggleWatchlist}>{inWatchlist ? "Saved to watchlist" : "Add to watchlist"}</button>
+              {inWatchlist && <button onClick={onRemoveWatchlist}>Remove from watchlist</button>}
+            </div>
+          </div>
+        </div>
+      </section>
     </div>
   );
 }

@@ -45,7 +45,8 @@ body {
 }
 
 button,
-input {
+input,
+textarea {
   font: inherit;
 }
 
@@ -350,6 +351,15 @@ h3 {
   border-radius: 12px;
   background: var(--surface-soft);
   border: 1px solid var(--line);
+  color: var(--text);
+  padding: 0;
+  text-align: left;
+}
+
+button.poster:hover,
+.movie-title-button:hover,
+.title-button:hover {
+  opacity: 0.86;
 }
 
 .poster.large {
@@ -464,14 +474,25 @@ h3 {
   min-width: 0;
 }
 
-.movie-info strong,
+.movie-title-button,
+.title-button {
+  min-width: 0;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+}
+
+.movie-title-button strong,
 .movie-info span {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.movie-info strong {
+.movie-title-button strong {
+  display: block;
   font-size: 0.95rem;
 }
 
@@ -580,6 +601,149 @@ h3 {
   box-shadow: var(--shadow);
 }
 
+.movie-detail {
+  width: min(980px, calc(100vw - 36px));
+  max-height: min(820px, calc(100vh - 36px));
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  background: var(--surface);
+  padding: 20px;
+  box-shadow: var(--shadow);
+}
+
+.detail-head,
+.detail-section-head,
+.detail-actions {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.detail-head {
+  margin-bottom: 18px;
+}
+
+.detail-head h2 {
+  font-size: clamp(2rem, 4vw, 3.8rem);
+}
+
+.detail-head button,
+.detail-section-head button,
+.detail-actions button {
+  min-height: 40px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: transparent;
+  color: var(--text);
+  padding: 0 12px;
+  font-weight: 850;
+}
+
+.detail-layout {
+  display: grid;
+  grid-template-columns: minmax(220px, 330px) minmax(0, 1fr);
+  gap: 22px;
+  align-items: start;
+}
+
+.detail-body {
+  display: grid;
+  gap: 18px;
+}
+
+.detail-body > p {
+  margin-bottom: 0;
+  color: var(--muted);
+  line-height: 1.65;
+}
+
+.detail-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.detail-meta span {
+  border-radius: 10px;
+  padding: 7px 10px;
+  background: var(--surface-soft);
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 850;
+}
+
+.detail-facts {
+  display: grid;
+  gap: 10px;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  padding: 14px 0;
+}
+
+.detail-facts div {
+  display: grid;
+  grid-template-columns: 90px minmax(0, 1fr);
+  gap: 14px;
+}
+
+.detail-facts span,
+.review-field span {
+  color: var(--muted);
+  font-weight: 850;
+}
+
+.detail-facts strong {
+  font-weight: 850;
+  line-height: 1.45;
+}
+
+.detail-section {
+  display: grid;
+  gap: 12px;
+}
+
+.detail-section-head strong {
+  display: block;
+  margin-top: 4px;
+  color: var(--star);
+}
+
+.review-field {
+  display: grid;
+  gap: 8px;
+}
+
+.review-field textarea {
+  width: 100%;
+  min-height: 120px;
+  resize: vertical;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface);
+  color: var(--text);
+  padding: 12px;
+  outline: 0;
+  line-height: 1.5;
+}
+
+.review-field textarea:focus {
+  border-color: var(--accent-strong);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+.detail-actions {
+  justify-content: start;
+  flex-wrap: wrap;
+}
+
+.detail-actions button:first-child {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-text);
+}
+
 .modal-head {
   display: flex;
   align-items: start;
@@ -646,7 +810,8 @@ h3 {
 
   .sprint-layout,
   .profile-head,
-  .desktop-dashboard {
+  .desktop-dashboard,
+  .detail-layout {
     grid-template-columns: 1fr;
   }
 

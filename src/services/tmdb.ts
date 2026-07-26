@@ -17,6 +17,15 @@ type TmdbMovie = {
   vote_average?: number;
 };
 
+type TmdbMovieDetail = TmdbMovie & {
+  runtime?: number;
+  genres?: Array<{ id: number; name: string }>;
+  credits?: {
+    cast?: Array<{ name: string; order: number }>;
+    crew?: Array<{ name: string; job: string }>;
+  };
+};
+
 const mapMovie = (movie: TmdbMovie): Movie => ({
   id: movie.id,
   title: movie.title || movie.name || "Untitled",
@@ -26,6 +35,23 @@ const mapMovie = (movie: TmdbMovie): Movie => ({
   overview: movie.overview || "No overview available yet.",
   genres: (movie.genre_ids || []).map((id) => genreIds[id]).filter(Boolean),
   voteAverage: movie.vote_average,
+});
+
+const mapMovieDetail = (movie: TmdbMovieDetail): Movie => ({
+  id: movie.id,
+  title: movie.title || movie.name || "Untitled",
+  year: (movie.release_date || movie.first_air_date || "").slice(0, 4) || "Unknown",
+  posterPath: movie.poster_path,
+  backdropPath: movie.backdrop_path,
+  overview: movie.overview || "No overview available yet.",
+  genres: movie.genres?.map((genre) => genre.name) || (movie.genre_ids || []).map((id) => genreIds[id]).filter(Boolean),
+  voteAverage: movie.vote_average,
+  runtime: movie.runtime,
+  director: movie.credits?.crew?.find((person) => person.job === "Director")?.name,
+  cast: movie.credits?.cast
+    ?.sort((a, b) => a.order - b.order)
+    .slice(0, 5)
+    .map((person) => person.name),
 });
 
 async function tmdbFetch(path: string) {
@@ -56,6 +82,12 @@ export async function searchMovies(query: string): Promise<Movie[]> {
     );
   }
   return data.results.map(mapMovie).filter((movie: Movie) => movie.posterPath).slice(0, 20);
+}
+
+export async function getMovieDetails(movie: Movie): Promise<Movie> {
+  const data = await tmdbFetch(`/movie/${movie.id}?append_to_response=credits`);
+  if (!data) return fallbackMovies.find((fallback) => fallback.id === movie.id) || movie;
+  return mapMovieDetail(data);
 }
 
 export function hasTmdbKey() {
