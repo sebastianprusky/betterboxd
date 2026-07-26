@@ -55,7 +55,6 @@ function recommendMovies(ratings: RatingMap, movies: Movie[]) {
 function App() {
   const [tab, setTab] = useState<Tab>("discover");
   const [theme, setTheme] = useState<Theme>(() => readJson(themeKey, "light", "cinecircle-theme"));
-  const [sidebarOpen, setSidebarOpen] = useState(true);
   const [ratings, setRatings] = useState<RatingMap>(() => readJson(ratingsKey, initialRatings, "cinecircle-ratings"));
   const [watchlist, setWatchlist] = useState<WatchlistMap>(() => readJson(watchlistKey, {}, "cinecircle-watchlist"));
   const [reviews, setReviews] = useState<ReviewMap>(() => readJson(reviewsKey, {}));
@@ -192,38 +191,16 @@ function App() {
   }
 
   return (
-    <div className={sidebarOpen ? "app" : "app sidebar-closed"}>
-      {sidebarOpen && (
-      <aside className="sidebar">
-        <button className="sidebar-collapse" onClick={() => setSidebarOpen(false)}>
-          Hide panel
-        </button>
-        <nav className="side-nav">
-          {navButton("discover", "Discover")}
-          {navButton("search", "Search")}
-          {navButton("profile", "Profile")}
-        </nav>
-        <div className="sidebar-footer">
-          <button className="theme-toggle" onClick={() => setTheme(theme === "light" ? "dark" : "light")}>
-            {theme === "light" ? "Dark mode" : "Light mode"}
-          </button>
-        </div>
-      </aside>
-      )}
-
+    <div className="app">
       <main className="main">
         <header className="topbar">
-          <div>
-            <p className="kicker">BetterBoxd</p>
-            <h1>{tab === "discover" ? "Discover" : tab === "search" ? "Search" : "Profile"}</h1>
-          </div>
+          <nav className="top-nav" aria-label="Primary navigation">
+            {navButton("discover", "Discover")}
+            {navButton("search", "Search")}
+            {navButton("profile", "Profile")}
+          </nav>
           <div className="topbar-actions">
-            {!sidebarOpen && (
-              <button className="panel-toggle" onClick={() => setSidebarOpen(true)}>
-                Show panel
-              </button>
-            )}
-            <button className="theme-toggle compact" onClick={() => setTheme(theme === "light" ? "dark" : "light")}>
+            <button className="theme-toggle" onClick={() => setTheme(theme === "light" ? "dark" : "light")}>
               {theme === "light" ? "Dark" : "Light"}
             </button>
           </div>
@@ -238,9 +215,8 @@ function App() {
               </button>
             </section>
 
-            <div className="desktop-dashboard">
-              <div className="primary-column">
-                <section className="sprint">
+            <div className="discover-focus">
+                <section className="sprint focus-sprint">
                   <div className="section-title">
                     <div>
                       <p className="kicker">Taste Sprint</p>
@@ -285,25 +261,6 @@ function App() {
                   onWatchlist={toggleWatchlist}
                   onOpen={openMovie}
                 />
-              </div>
-              <aside className="insight-panel">
-                <p className="kicker">Taste profile</p>
-                <h2>{topGenre}</h2>
-                <div className="insight-list">
-                  <div>
-                    <span>Rated</span>
-                    <strong>{Object.keys(ratings).length}</strong>
-                  </div>
-                  <div>
-                    <span>Watchlist</span>
-                    <strong>{Object.keys(watchlist).length}</strong>
-                  </div>
-                  <div>
-                    <span>Best next action</span>
-                    <strong>Rate 5 more</strong>
-                  </div>
-                </div>
-              </aside>
             </div>
           </section>
         )}
@@ -535,17 +492,29 @@ function RatingPicker({
   onChange: (rating: number) => void;
   compact?: boolean;
 }) {
-  const ratings = [0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5];
+  const stars = [1, 2, 3, 4, 5];
+
+  function chooseRating(star: number) {
+    onChange(value === star ? star - 0.5 : star);
+  }
+
+  function starState(star: number) {
+    if (!value) return "empty";
+    if (value >= star) return "full";
+    if (value === star - 0.5) return "half";
+    return "empty";
+  }
+
   return (
     <div className={compact ? "rating compact-rating" : "rating"} aria-label="Choose rating">
-      {ratings.map((rating) => (
+      {stars.map((star) => (
         <button
-          key={rating}
-          className={value === rating ? "selected" : ""}
-          onClick={() => onChange(rating)}
-          aria-label={`${rating} stars`}
+          key={star}
+          className={starState(star)}
+          onClick={() => chooseRating(star)}
+          aria-label={`${star} stars`}
         >
-          {rating}
+          ★
         </button>
       ))}
     </div>
