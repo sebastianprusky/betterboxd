@@ -4,6 +4,8 @@ export type Theme = "light" | "dark";
 
 export type ProfileSort = "recentlyWatched" | "highestRated" | "lowestRated" | "recentlyReleased";
 
+export type InterestValue = "interested" | "maybe" | "notInterested";
+
 export type Movie = {
   id: number;
   title: string;
@@ -23,5 +25,7 @@ export type RatingMap = Record<string, number>;
 export type WatchlistMap = Record<string, Movie>;
 
 export type WatchedMap = Record<string, { movie: Movie; watchedAt: number }>;
+
+export type InterestMap = Record<string, { movie: Movie; value: InterestValue; updatedAt: number }>;
 
 export type ReviewMap = Record<string, string>;

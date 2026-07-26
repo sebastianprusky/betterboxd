@@ -1,13 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
 import { fallbackMovies } from "./data/fallbackMovies";
 import { getMovieDetails, getTrendingMovies, hasTmdbKey, posterUrl, searchMovies } from "./services/tmdb";
-import type { Movie, ProfileSort, RatingMap, ReviewMap, Tab, Theme, WatchedMap, WatchlistMap } from "./types";
+import type { InterestMap, InterestValue, Movie, ProfileSort, RatingMap, ReviewMap, Tab, Theme, WatchedMap, WatchlistMap } from "./types";
 
 const ratingsKey = "betterboxd-ratings";
 const watchlistKey = "betterboxd-watchlist";
 const reviewsKey = "betterboxd-reviews";
 const themeKey = "betterboxd-theme";
 const watchedKey = "betterboxd-watched";
+const interestKey = "betterboxd-interest";
 
 const initialRatings: RatingMap = {
   "496243": 4.5,
@@ -55,6 +56,7 @@ function App() {
   const [ratings, setRatings] = useState<RatingMap>(() => readJson(ratingsKey, initialRatings, "cinecircle-ratings"));
   const [watchlist, setWatchlist] = useState<WatchlistMap>(() => readJson(watchlistKey, {}, "cinecircle-watchlist"));
   const [watched, setWatched] = useState<WatchedMap>(() => readJson(watchedKey, {}));
+  const [interest, setInterest] = useState<InterestMap>(() => readJson(interestKey, {}));
   const [reviews, setReviews] = useState<ReviewMap>(() => readJson(reviewsKey, {}));
   const [profileSort, setProfileSort] = useState<ProfileSort>("recentlyWatched");
   const [movies, setMovies] = useState<Movie[]>(fallbackMovies);
@@ -84,6 +86,10 @@ function App() {
   useEffect(() => {
     localStorage.setItem(watchedKey, JSON.stringify(watched));
   }, [watched]);
+
+  useEffect(() => {
+    localStorage.setItem(interestKey, JSON.stringify(interest));
+  }, [interest]);
 
   useEffect(() => {
     localStorage.setItem(reviewsKey, JSON.stringify(reviews));
@@ -116,15 +122,20 @@ function App() {
       ...quickResults,
       ...Object.values(watchlist),
       ...Object.values(watched).map((entry) => entry.movie),
+      ...Object.values(interest).map((entry) => entry.movie),
       ...(detailMovie ? [detailMovie] : []),
     ].forEach((movie) => map.set(movie.id, movie));
     return [...map.values()];
-  }, [movies, searchResults, quickResults, watchlist, watched, detailMovie]);
+  }, [movies, searchResults, quickResults, watchlist, watched, interest, detailMovie]);
 
   const recommendations = useMemo(() => recommendMovies(ratings, allKnownMovies), [ratings, allKnownMovies]);
   const topGenre = useMemo(() => getTopGenre(ratings, allKnownMovies), [ratings, allKnownMovies]);
   const sprintQueue = recommendations.length ? recommendations : movies.filter((movie) => !ratings[movie.id]);
   const sprintMovie = sprintQueue[sprintIndex % Math.max(sprintQueue.length, 1)];
+  const interestMovies = useMemo(
+    () => Object.values(interest).sort((a, b) => b.updatedAt - a.updatedAt),
+    [interest]
+  );
   const profileMovies = useMemo(() => {
     const map = new Map<number, Movie>();
     Object.values(watched).forEach((entry) => map.set(entry.movie.id, entry.movie));
@@ -186,6 +197,14 @@ function App() {
     });
   }
 
+  function setMovieInterest(movie: Movie, value: InterestValue) {
+    setInterest((current) => ({
+      ...current,
+      [movie.id]: { movie, value, updatedAt: Date.now() },
+    }));
+    nextSprint();
+  }
+
   function removeFromWatchlist(movie: Movie) {
     setWatchlist((current) => {
       const next = { ...current };
@@ -219,6 +238,10 @@ function App() {
     setSprintIndex((index) => index + 1);
   }
 
+  function previousSprint() {
+    setSprintIndex((index) => (index <= 0 ? Math.max(sprintQueue.length - 1, 0) : index - 1));
+  }
+
   function navButton(value: Tab, label: string) {
     return (
       <button className={tab === value ? "is-active" : ""} onClick={() => setTab(value)}>
@@ -233,6 +256,11 @@ function App() {
         {label}
       </button>
     );
+  }
+
+  function interestLabel(value: InterestValue) {
+    if (value === "notInterested") return "Not interested";
+    return value === "maybe" ? "Maybe" : "Interested";
   }
 
   return (
@@ -263,24 +291,38 @@ function App() {
                 </div>
                 {sprintMovie && (
                   <div className="sprint-layout">
-                    <Poster movie={sprintMovie} large onOpen={openMovie} />
+                    <div className="poster-stage">
+                      <button className="poster-arrow left" onClick={previousSprint} aria-label="Previous movie">
+                        <span aria-hidden="true">&lt;</span>
+                      </button>
+                      <Poster movie={sprintMovie} large overlayTitle onOpen={openMovie} />
+                      <button className="poster-arrow right" onClick={nextSprint} aria-label="Next movie">
+                        <span aria-hidden="true">&gt;</span>
+                      </button>
+                    </div>
                     <div className="sprint-copy">
-                      <div>
-                        <button className="title-button" onClick={() => openMovie(sprintMovie)}>
-                          <h3>{sprintMovie.title}</h3>
+                      <p>{sprintMovie.year} · {sprintMovie.genres.slice(0, 2).join(", ") || "Movie"}</p>
+                      <div className="interest-actions" aria-label="Taste Sprint response">
+                        <button
+                          className={interest[sprintMovie.id]?.value === "notInterested" ? "is-active" : ""}
+                          onClick={() => setMovieInterest(sprintMovie, "notInterested")}
+                        >
+                          Not interested
                         </button>
-                        <p>{sprintMovie.year} · {sprintMovie.genres.slice(0, 2).join(", ") || "Movie"}</p>
+                        <button
+                          className={interest[sprintMovie.id]?.value === "maybe" ? "is-active" : ""}
+                          onClick={() => setMovieInterest(sprintMovie, "maybe")}
+                        >
+                          Maybe
+                        </button>
+                        <button
+                          className={interest[sprintMovie.id]?.value === "interested" ? "is-active" : ""}
+                          onClick={() => setMovieInterest(sprintMovie, "interested")}
+                        >
+                          Interested
+                        </button>
                       </div>
-                      <div className="genre-row">
-                        {sprintMovie.genres.slice(0, 3).map((genre) => (
-                          <span key={genre}>{genre}</span>
-                        ))}
-                      </div>
-                      <RatingPicker value={ratings[sprintMovie.id]} onChange={(rating) => rateMovie(sprintMovie, rating)} />
                       <div className="action-grid">
-                        <button className="skip-button" onClick={nextSprint} aria-label="Skip movie">
-                          <span aria-hidden="true">&gt;</span>
-                        </button>
                         <button className="watchlist-button" onClick={() => toggleWatchlist(sprintMovie)}>
                           {watchlist[sprintMovie.id] ? "Saved" : "+ Watchlist"}
                         </button>
@@ -355,6 +397,52 @@ function App() {
               />
               {!profileMovies.length && <p className="empty">Mark a movie watched to start your profile.</p>}
             </section>
+
+            <section className="movie-section profile-list">
+              <div className="section-title profile-title">
+                <div>
+                  <p className="kicker">Movies you want to come back to</p>
+                  <h2>Watchlist</h2>
+                </div>
+              </div>
+              {Object.values(watchlist).length ? (
+                <MovieGrid
+                  movies={Object.values(watchlist)}
+                  ratings={ratings}
+                  watchlist={watchlist}
+                  onRate={rateMovie}
+                  onWatchlist={toggleWatchlist}
+                  onOpen={openMovie}
+                />
+              ) : (
+                <p className="empty">Your watchlist is empty.</p>
+              )}
+            </section>
+
+            <section className="movie-section profile-list">
+              <div className="section-title profile-title">
+                <div>
+                  <p className="kicker">Taste Sprint</p>
+                  <h2>Saved signals</h2>
+                </div>
+              </div>
+              {interestMovies.length ? (
+                <div className="signal-list">
+                  {interestMovies.map(({ movie, value }) => (
+                    <button key={movie.id} className="signal-item" onClick={() => openMovie(movie)}>
+                      <Poster movie={movie} />
+                      <span>
+                        <strong>{movie.title}</strong>
+                        <small>{movie.year}</small>
+                      </span>
+                      <em>{interestLabel(value)}</em>
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <p className="empty">Use Taste Sprint to save what looks interesting.</p>
+              )}
+            </section>
           </section>
         )}
       </main>
@@ -366,7 +454,8 @@ function App() {
       </nav>
 
       <button className="floating-add" onClick={() => setQuickAddOpen(true)}>
-        +
+        <span className="plus-icon" aria-hidden="true" />
+        <span className="sr-only">Quick add watched movie</span>
       </button>
 
       {quickAddOpen && (
@@ -508,20 +597,31 @@ function MovieGrid(props: {
   );
 }
 
-function Poster({ movie, large = false, onOpen }: { movie: Movie; large?: boolean; onOpen?: (movie: Movie) => void }) {
+function Poster({
+  movie,
+  large = false,
+  overlayTitle = false,
+  onOpen,
+}: {
+  movie: Movie;
+  large?: boolean;
+  overlayTitle?: boolean;
+  onOpen?: (movie: Movie) => void;
+}) {
   const url = posterUrl(movie.posterPath, large ? "w780" : "w342");
   const content = (
     <>
-      {url ? <img src={url} alt={`${movie.title} poster`} /> : <span>{movie.title}</span>}
+      {url ? <img src={url} alt={`${movie.title} poster`} /> : <span className="poster-fallback">{movie.title}</span>}
+      {overlayTitle && <span className="poster-title">{movie.title}</span>}
     </>
   );
 
   return onOpen ? (
-    <button className={large ? "poster large" : "poster"} onClick={() => onOpen(movie)} aria-label={`Open ${movie.title}`}>
+    <button className={`${large ? "poster large" : "poster"}${overlayTitle ? " has-title-overlay" : ""}`} onClick={() => onOpen(movie)} aria-label={`Open ${movie.title}`}>
       {content}
     </button>
   ) : (
-    <div className={large ? "poster large" : "poster"}>{content}</div>
+    <div className={`${large ? "poster large" : "poster"}${overlayTitle ? " has-title-overlay" : ""}`}>{content}</div>
   );
 }
 
