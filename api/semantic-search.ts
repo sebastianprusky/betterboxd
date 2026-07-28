@@ -3,18 +3,6 @@ import type { Movie } from "../src/types";
 
 declare const process: { env: Record<string, string | undefined> };
 
-type RequestLike = {
-  method?: string;
-  body?: unknown;
-  on?: (event: "data" | "end" | "error", callback: (chunk?: Buffer) => void) => void;
-};
-
-type ResponseLike = {
-  statusCode: number;
-  setHeader: (name: string, value: string) => void;
-  end: (body?: string) => void;
-};
-
 type SemanticSearchBody = {
   query?: unknown;
   movies?: unknown;
@@ -29,18 +17,12 @@ type OpenAIEmbeddingResponse = {
   data?: OpenAIEmbedding[];
 };
 
-type Buffer = {
-  toString: (encoding?: string) => string;
-};
-
 const embeddingModel = "text-embedding-3-small";
 const maxCandidates = 50;
 const maxResults = 20;
 
-function sendJson(response: ResponseLike, statusCode: number, body: unknown) {
-  response.statusCode = statusCode;
-  response.setHeader("Content-Type", "application/json");
-  response.end(JSON.stringify(body));
+function sendJson(body: unknown, status = 200) {
+  return Response.json(body, { status });
 }
 
 function isMovie(value: unknown): value is Movie {
@@ -95,22 +77,13 @@ function cosineSimilarity(a: number[], b: number[]) {
   return dot / (Math.sqrt(aMagnitude) * Math.sqrt(bMagnitude));
 }
 
-async function readBody(request: RequestLike): Promise<SemanticSearchBody> {
-  if (request.body && typeof request.body === "object") return request.body as SemanticSearchBody;
-  if (typeof request.body === "string") return JSON.parse(request.body) as SemanticSearchBody;
-  if (!request.on) return {};
-
-  const chunks: Buffer[] = [];
-  await new Promise<void>((resolve, reject) => {
-    request.on?.("data", (chunk?: Buffer) => {
-      if (chunk) chunks.push(chunk);
-    });
-    request.on?.("end", () => resolve());
-    request.on?.("error", () => reject(new Error("Failed to read request body")));
-  });
-
-  const rawBody = chunks.map((chunk) => chunk.toString("utf8")).join("");
-  return rawBody ? (JSON.parse(rawBody) as SemanticSearchBody) : {};
+async function readBody(request: Request): Promise<SemanticSearchBody> {
+  try {
+    const body = await request.json();
+    return body && typeof body === "object" ? (body as SemanticSearchBody) : {};
+  } catch {
+    return {};
+  }
 }
 
 async function createEmbeddings(input: string[], apiKey: string) {
@@ -133,22 +106,10 @@ async function createEmbeddings(input: string[], apiKey: string) {
   return (data.data || []).sort((a, b) => a.index - b.index).map((item) => item.embedding);
 }
 
-export default async function handler(request: RequestLike, response: ResponseLike) {
-  if (request.method === "OPTIONS") {
-    response.statusCode = 204;
-    response.end();
-    return;
-  }
-
-  if (request.method !== "POST") {
-    sendJson(response, 405, { error: "Method not allowed" });
-    return;
-  }
-
+export async function POST(request: Request) {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
-    sendJson(response, 503, { error: "Semantic search is not configured" });
-    return;
+    return sendJson({ error: "Semantic search is not configured" }, 503);
   }
 
   try {
@@ -157,8 +118,7 @@ export default async function handler(request: RequestLike, response: ResponseLi
     const movies = normalizeCandidates(body.movies);
 
     if (!query) {
-      sendJson(response, 200, { movies: [] });
-      return;
+      return sendJson({ movies: [] });
     }
 
     const embeddings = await createEmbeddings([query, ...movies.map(movieEmbeddingText)], apiKey);
@@ -178,8 +138,24 @@ export default async function handler(request: RequestLike, response: ResponseLi
       .slice(0, maxResults)
       .map(({ movie }) => movie);
 
-    sendJson(response, 200, { movies: rankedMovies });
+    return sendJson({ movies: rankedMovies });
   } catch {
-    sendJson(response, 502, { error: "Semantic search request failed" });
+    return sendJson({ error: "Semantic search request failed" }, 502);
   }
 }
+
+export function OPTIONS() {
+  return new Response(null, { status: 204 });
+}
+
+export function GET() {
+  return sendJson({ error: "Method not allowed" }, 405);
+}
+
+export default {
+  fetch(request: Request) {
+    if (request.method === "OPTIONS") return OPTIONS();
+    if (request.method === "POST") return POST(request);
+    return GET();
+  },
+};
