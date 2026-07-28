@@ -3,12 +3,16 @@ import { fallbackMovies } from "./data/fallbackMovies";
 import { getMovieDetails, getTrendingMovies, hasTmdbKey, posterUrl, searchMovies } from "./services/tmdb";
 import type { InterestMap, InterestValue, Movie, ProfileSort, RatingMap, ReviewMap, Tab, Theme, WatchedMap, WatchlistMap } from "./types";
 
+type AccountMode = "unset" | "guest" | "signIn" | "create";
+
 const ratingsKey = "betterboxd-ratings";
 const watchlistKey = "betterboxd-watchlist";
 const reviewsKey = "betterboxd-reviews";
 const themeKey = "betterboxd-theme";
 const watchedKey = "betterboxd-watched";
 const interestKey = "betterboxd-interest";
+const accountModeKey = "betterboxd-account-mode";
+const accountEmailKey = "betterboxd-account-email";
 
 const initialRatings: RatingMap = {
   "496243": 4.5,
@@ -58,6 +62,11 @@ function App() {
   const [watched, setWatched] = useState<WatchedMap>(() => readJson(watchedKey, {}));
   const [interest, setInterest] = useState<InterestMap>(() => readJson(interestKey, {}));
   const [reviews, setReviews] = useState<ReviewMap>(() => readJson(reviewsKey, {}));
+  const [accountMode, setAccountMode] = useState<AccountMode>(() => readJson(accountModeKey, "unset"));
+  const [accountFormMode, setAccountFormMode] = useState<Exclude<AccountMode, "unset" | "guest">>("create");
+  const [accountEmail, setAccountEmail] = useState(() => readJson(accountEmailKey, ""));
+  const [accountEmailDraft, setAccountEmailDraft] = useState(accountEmail);
+  const [saveStatus, setSaveStatus] = useState("Saved on this device");
   const [profileSort, setProfileSort] = useState<ProfileSort>("recentlyWatched");
   const [movies, setMovies] = useState<Movie[]>(fallbackMovies);
   const [searchQuery, setSearchQuery] = useState("");
@@ -94,6 +103,20 @@ function App() {
   useEffect(() => {
     localStorage.setItem(reviewsKey, JSON.stringify(reviews));
   }, [reviews]);
+
+  useEffect(() => {
+    localStorage.setItem(accountModeKey, JSON.stringify(accountMode));
+  }, [accountMode]);
+
+  useEffect(() => {
+    localStorage.setItem(accountEmailKey, JSON.stringify(accountEmail));
+  }, [accountEmail]);
+
+  useEffect(() => {
+    if (saveStatus === "Saved on this device") return;
+    const timeout = window.setTimeout(() => setSaveStatus("Saved on this device"), 3200);
+    return () => window.clearTimeout(timeout);
+  }, [saveStatus]);
 
   useEffect(() => {
     getTrendingMovies().then(setMovies).catch(() => setMovies(fallbackMovies));
@@ -149,12 +172,43 @@ function App() {
     });
   }, [allKnownMovies, profileSort, ratings, watched]);
 
-  function rateMovie(movie: Movie, rating: number) {
-    setRatings((current) => ({ ...current, [movie.id]: rating }));
-    markWatched(movie);
+  function announceSave(message: string) {
+    setSaveStatus(`${message} locally`);
   }
 
-  function markWatched(movie: Movie) {
+  function toggleTheme() {
+    setTheme((currentTheme) => (currentTheme === "light" ? "dark" : "light"));
+    announceSave("Theme saved");
+  }
+
+  function chooseGuestMode() {
+    setAccountMode("guest");
+    setAccountEmail("");
+    setAccountEmailDraft("");
+    announceSave("Guest mode selected");
+  }
+
+  function prepareAccountMode(mode: Exclude<AccountMode, "unset" | "guest">) {
+    setAccountMode(mode);
+    setAccountFormMode(mode);
+    setAccountEmailDraft(accountEmail);
+  }
+
+  function submitAccountEmail(email: string) {
+    const normalizedEmail = email.trim();
+    if (!normalizedEmail) return;
+    setAccountEmail(normalizedEmail);
+    setAccountMode(accountFormMode);
+    announceSave("Account email saved");
+  }
+
+  function rateMovie(movie: Movie, rating: number) {
+    setRatings((current) => ({ ...current, [movie.id]: rating }));
+    markWatched(movie, false);
+    announceSave(`${movie.title} rating saved`);
+  }
+
+  function markWatched(movie: Movie, notify = true) {
     setWatched((current) => ({
       ...current,
       [movie.id]: { movie, watchedAt: Date.now() },
@@ -164,9 +218,10 @@ function App() {
       delete next[movie.id];
       return next;
     });
+    if (notify) announceSave(`${movie.title} marked watched`);
   }
 
-  function removeRating(movie: Movie) {
+  function removeRating(movie: Movie, notify = true) {
     setRatings((current) => {
       const next = { ...current };
       delete next[movie.id];
@@ -177,24 +232,28 @@ function App() {
       delete next[movie.id];
       return next;
     });
+    if (notify) announceSave(`${movie.title} rating removed`);
   }
 
   function removeWatched(movie: Movie) {
-    removeRating(movie);
+    removeRating(movie, false);
     setWatched((current) => {
       const next = { ...current };
       delete next[movie.id];
       return next;
     });
+    announceSave(`${movie.title} removed from watched`);
   }
 
   function toggleWatchlist(movie: Movie) {
+    const wasSaved = Boolean(watchlist[movie.id]);
     setWatchlist((current) => {
       const next = { ...current };
       if (next[movie.id]) delete next[movie.id];
       else next[movie.id] = movie;
       return next;
     });
+    announceSave(`${movie.title} ${wasSaved ? "removed from watchlist" : "saved to watchlist"}`);
   }
 
   function setMovieInterest(movie: Movie, value: InterestValue) {
@@ -202,6 +261,7 @@ function App() {
       ...current,
       [movie.id]: { movie, value, updatedAt: Date.now() },
     }));
+    announceSave(`${movie.title} marked ${interestLabel(value).toLowerCase()}`);
     nextSprint();
   }
 
@@ -211,6 +271,7 @@ function App() {
       delete next[movie.id];
       return next;
     });
+    announceSave(`${movie.title} removed from watchlist`);
   }
 
   function updateReview(movie: Movie, review: string) {
@@ -220,6 +281,7 @@ function App() {
       else delete next[movie.id];
       return next;
     });
+    announceSave(`${movie.title} review note saved`);
   }
 
   async function openMovie(movie: Movie) {
@@ -273,7 +335,8 @@ function App() {
             {navButton("profile", "Profile")}
           </nav>
           <div className="topbar-actions">
-            <button className="theme-toggle" onClick={() => setTheme(theme === "light" ? "dark" : "light")}>
+            <span className="save-status" aria-live="polite">{saveStatus}</span>
+            <button className="theme-toggle" onClick={toggleTheme}>
               {theme === "light" ? "Dark" : "Light"}
             </button>
           </div>
@@ -373,6 +436,18 @@ function App() {
 
         {tab === "profile" && (
           <section className="screen">
+            <AccountSettings
+              mode={accountMode}
+              formMode={accountFormMode}
+              email={accountEmail}
+              emailDraft={accountEmailDraft}
+              saveStatus={saveStatus}
+              onEmailDraftChange={setAccountEmailDraft}
+              onChooseGuest={chooseGuestMode}
+              onPrepareAccount={prepareAccountMode}
+              onSubmitEmail={submitAccountEmail}
+            />
+
             <section className="movie-section profile-list">
               <div className="section-title profile-title">
                 <div>
@@ -530,6 +605,89 @@ function App() {
         />
       )}
     </div>
+  );
+}
+
+function AccountSettings({
+  mode,
+  formMode,
+  email,
+  emailDraft,
+  saveStatus,
+  onEmailDraftChange,
+  onChooseGuest,
+  onPrepareAccount,
+  onSubmitEmail,
+}: {
+  mode: AccountMode;
+  formMode: Exclude<AccountMode, "unset" | "guest">;
+  email: string;
+  emailDraft: string;
+  saveStatus: string;
+  onEmailDraftChange: (email: string) => void;
+  onChooseGuest: () => void;
+  onPrepareAccount: (mode: Exclude<AccountMode, "unset" | "guest">) => void;
+  onSubmitEmail: (email: string) => void;
+}) {
+  const accountActionLabel = formMode === "create" ? "Create account" : "Sign in";
+  const accountStatus =
+    mode === "guest"
+      ? "Guest mode"
+      : email
+        ? "Account email saved"
+        : mode === "unset"
+          ? "Choose how to save"
+          : accountActionLabel;
+
+  return (
+    <section className="account-panel" aria-labelledby="account-settings-title">
+      <div className="account-summary">
+        <div>
+          <p className="kicker">Profile settings</p>
+          <h2 id="account-settings-title">Account and saves</h2>
+        </div>
+        <span>{saveStatus}</span>
+      </div>
+
+      <div className="account-grid">
+        <div className="account-choice">
+          <strong>{accountStatus}</strong>
+          <p>Create an account to sync ratings, reviews, and watchlist across devices. Continue as guest to keep everything on this device.</p>
+          {email && <small>{email}</small>}
+          <div className="account-actions" aria-label="Account options">
+            <button className={formMode === "create" && mode !== "guest" ? "is-active" : ""} onClick={() => onPrepareAccount("create")}>
+              Create account
+            </button>
+            <button className={formMode === "signIn" && mode !== "guest" ? "is-active" : ""} onClick={() => onPrepareAccount("signIn")}>
+              Sign in
+            </button>
+            <button className={mode === "guest" ? "is-active" : ""} onClick={onChooseGuest}>
+              Continue as guest
+            </button>
+          </div>
+        </div>
+
+        <form
+          className="account-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            onSubmitEmail(emailDraft);
+          }}
+        >
+          <label>
+            <span>Email</span>
+            <input
+              type="email"
+              value={emailDraft}
+              onChange={(event) => onEmailDraftChange(event.target.value)}
+              placeholder={formMode === "create" ? "you@example.com" : "email used for your account"}
+            />
+          </label>
+          <button type="submit">{accountActionLabel}</button>
+          <p>Account sync is ready for the future Supabase flow. Until auth is connected, changes are saved locally.</p>
+        </form>
+      </div>
+    </section>
   );
 }
 

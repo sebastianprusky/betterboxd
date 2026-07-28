@@ -1,5 +1,6 @@
 import { fallbackMovies, genreIds } from "../data/fallbackMovies";
 import type { Movie } from "../types";
+import { localSemanticSearch, searchMoviesSemantically } from "./semanticSearch";
 
 const apiKey = import.meta.env.VITE_TMDB_API_KEY as string | undefined;
 const apiBase = "https://api.themoviedb.org/3";
@@ -74,14 +75,21 @@ export async function getTrendingMovies(): Promise<Movie[]> {
 
 export async function searchMovies(query: string): Promise<Movie[]> {
   if (!query.trim()) return [];
-  const data = await tmdbFetch(`/search/movie?query=${encodeURIComponent(query)}&include_adult=false`);
-  if (!data) {
-    const normalized = query.toLowerCase();
-    return fallbackMovies.filter((movie) =>
-      [movie.title, movie.year, movie.overview, ...movie.genres].join(" ").toLowerCase().includes(normalized)
-    );
+
+  if (!apiKey) {
+    return searchMoviesSemantically(query, fallbackMovies);
   }
-  return data.results.map(mapMovie).filter((movie: Movie) => movie.posterPath).slice(0, 20);
+
+  try {
+    const data = await tmdbFetch(`/search/movie?query=${encodeURIComponent(query)}&include_adult=false`);
+    if (!data) return searchMoviesSemantically(query, fallbackMovies);
+
+    const results = data.results.map(mapMovie).filter((movie: Movie) => movie.posterPath).slice(0, 20);
+    const semanticResults = await searchMoviesSemantically(query, results);
+    return semanticResults.length ? semanticResults : results;
+  } catch {
+    return localSemanticSearch(query, fallbackMovies);
+  }
 }
 
 export async function getMovieDetails(movie: Movie): Promise<Movie> {

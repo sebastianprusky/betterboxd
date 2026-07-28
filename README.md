@@ -6,6 +6,7 @@ BetterBoxd is a clean movie rating and recommendation web app prototype. It is p
 
 - Discover page with an embedded Taste Sprint quick-rating flow
 - TMDB-powered movie search when `VITE_TMDB_API_KEY` is configured
+- Server-side OpenAI semantic search when `OPENAI_API_KEY` is configured
 - Fallback demo movie data with real poster URLs for local testing without an API key
 - Half-star rating system stored in `localStorage`
 - Watchlist stored in `localStorage`
@@ -28,11 +29,14 @@ Create a local env file:
 cp .env.example .env.local
 ```
 
-Add your TMDB API key:
+Add your API keys:
 
 ```bash
 VITE_TMDB_API_KEY=your_tmdb_api_key_here
+OPENAI_API_KEY=your_server_side_openai_api_key_here
 ```
+
+`OPENAI_API_KEY` must remain server-side only. The browser calls `/api/semantic-search`, and the app falls back to local movie matching when the key is absent or the server route is unavailable.
 
 Run the app:
 
@@ -44,7 +48,7 @@ Then open the local URL printed by Vite.
 
 ## Deployment
 
-Vercel is the recommended first host for portfolio and phone testing. Add the same `VITE_TMDB_API_KEY` environment variable in Vercel before deploying.
+Vercel is the recommended first host for portfolio and phone testing. Add `VITE_TMDB_API_KEY` and the server-only `OPENAI_API_KEY` environment variable in Vercel before deploying.
 
 ## Product Direction
 
