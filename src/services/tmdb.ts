@@ -16,6 +16,7 @@ type TmdbMovie = {
   overview: string;
   genre_ids?: number[];
   vote_average?: number;
+  popularity?: number;
 };
 
 type TmdbMovieDetail = TmdbMovie & {
@@ -36,6 +37,12 @@ type AskIntent = {
   semanticQuery: string;
 };
 
+type SearchCandidate = {
+  movie: Movie;
+  sourceRank: number;
+  personMatch?: boolean;
+};
+
 const mapMovie = (movie: TmdbMovie): Movie => ({
   id: movie.id,
   title: movie.title || movie.name || "Untitled",
@@ -45,6 +52,7 @@ const mapMovie = (movie: TmdbMovie): Movie => ({
   overview: movie.overview || "No overview available yet.",
   genres: (movie.genre_ids || []).map((id) => genreIds[id]).filter(Boolean),
   voteAverage: movie.vote_average,
+  popularity: movie.popularity,
 });
 
 const genreNameToId = Object.fromEntries(Object.entries(genreIds).map(([id, name]) => [name.toLowerCase(), id]));
@@ -110,6 +118,7 @@ const mapMovieDetail = (movie: TmdbMovieDetail): Movie => ({
     ?.sort((a, b) => a.order - b.order)
     .slice(0, 5)
     .map((person) => person.name),
+  popularity: movie.popularity,
 });
 
 async function tmdbFetch(path: string) {
@@ -127,6 +136,61 @@ function dedupeMovies(movies: Movie[]) {
     seen.add(movie.id);
     return true;
   });
+}
+
+function normalizeSearchText(value: string) {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+function titleRelevanceScore(query: string, movie: Movie) {
+  const normalizedQuery = normalizeSearchText(query);
+  const title = normalizeSearchText(movie.title);
+  if (!normalizedQuery || !title) return 0;
+
+  const queryWords = normalizedQuery.split(" ").filter(Boolean);
+  const titleWords = title.split(" ").filter(Boolean);
+  const phraseIsShort = normalizedQuery.length <= 3;
+
+  if (title === normalizedQuery) return 22000;
+  if (titleWords.includes(normalizedQuery)) return 19000;
+  if (title.startsWith(`${normalizedQuery} `) || title.startsWith(normalizedQuery)) return 12500;
+
+  const prefixMatches = queryWords.filter((word) => titleWords.some((titleWord) => titleWord.startsWith(word))).length;
+  if (prefixMatches === queryWords.length && prefixMatches > 0) return phraseIsShort ? 9000 : 10800;
+  if (prefixMatches > 0) return phraseIsShort ? 5200 : 5800;
+
+  if (!phraseIsShort && title.includes(normalizedQuery)) return 4200;
+
+  const containedWords = queryWords.filter((word) => title.includes(word)).length;
+  if (containedWords > 0) return phraseIsShort ? 1600 : 3200;
+
+  return 0;
+}
+
+function popularityScore(movie: Movie) {
+  return Math.min(Math.log10((movie.popularity || 0) + 1) * 1100, 3200);
+}
+
+function rankSearchCandidates(query: string, candidates: SearchCandidate[]) {
+  const seen = new Set<number>();
+  return candidates
+    .map((candidate) => {
+      const relevance = titleRelevanceScore(query, candidate.movie);
+      const personBoost = candidate.personMatch ? 5600 : 0;
+      const sourceRankBoost = Math.max(0, 900 - candidate.sourceRank * 35);
+      return {
+        ...candidate,
+        score: relevance + personBoost + popularityScore(candidate.movie) + sourceRankBoost,
+      };
+    })
+    .filter(({ movie, score }) => {
+      if (seen.has(movie.id)) return false;
+      seen.add(movie.id);
+      return score > 0;
+    })
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 20)
+    .map(({ movie }) => movie);
 }
 
 function fastSearchDebug(movies: Movie[], status: string, mode: string, reasonSource: string): MovieDebugMap {
@@ -178,15 +242,14 @@ export async function searchMoviesWithDebug(query: string): Promise<SearchWithDe
     const data = await tmdbFetch(`/search/multi?query=${encodeURIComponent(query)}&include_adult=false`);
     if (!data) return searchMoviesWithDebugFromFallback(query);
 
-    const results = dedupeMovies(
-      data.results
-        .flatMap((item: TmdbMovie & { media_type?: string; known_for?: TmdbMovie[] }) => {
-          if (item.media_type === "movie") return [mapMovie(item)];
-          if (item.media_type === "person") return (item.known_for || []).map(mapMovie);
-          return [];
-        })
-        .filter((movie: Movie) => movie.posterPath)
-    ).slice(0, 20);
+    const candidates = data.results.flatMap((item: TmdbMovie & { media_type?: string; known_for?: TmdbMovie[] }, sourceRank: number) => {
+      if (item.media_type === "movie") return [{ movie: mapMovie(item), sourceRank }];
+      if (item.media_type === "person") {
+        return (item.known_for || []).map((movie) => ({ movie: mapMovie(movie), sourceRank, personMatch: true }));
+      }
+      return [];
+    });
+    const results = rankSearchCandidates(query, candidates).filter((movie) => movie.posterPath);
 
     return {
       movies: results,
@@ -303,9 +366,13 @@ async function discoverAskCandidates(intent: AskIntent): Promise<Movie[]> {
   if (intent.yearFrom) params.set("primary_release_date.gte", `${intent.yearFrom}-01-01`);
   if (intent.yearTo) params.set("primary_release_date.lte", `${intent.yearTo}-12-31`);
 
-  const data = await tmdbFetch(`/discover/movie?${params.toString()}`);
-  if (!data) return filterFallbackMovies(intent);
-  return data.results.map(mapMovie).filter((movie: Movie) => movie.posterPath).slice(0, 20);
+  const pages = await Promise.all([1, 2].map((page) => {
+    params.set("page", String(page));
+    return tmdbFetch(`/discover/movie?${params.toString()}`);
+  }));
+  const results = pages.flatMap((data) => data?.results || []);
+  if (!results.length) return filterFallbackMovies(intent);
+  return dedupeMovies(results.map(mapMovie).filter((movie: Movie) => movie.posterPath)).slice(0, 32);
 }
 
 function explainAskIntent(intent: AskIntent, usedSemanticRanking: boolean) {
@@ -313,7 +380,7 @@ function explainAskIntent(intent: AskIntent, usedSemanticRanking: boolean) {
     return "I treated this as a broad movie request and used available movie metadata.";
   }
   const understood = intent.filters.length ? intent.filters.map((filter) => `${filter.label.toLowerCase()} ${filter.value}`).join(", ") : "broad movie metadata";
-  return `I understood: ${understood}. ${usedSemanticRanking ? "Fuzzy wording was ranked semantically after metadata filtering." : "Results use metadata filtering without semantic ranking."}`;
+  return `I understood: ${understood}. ${usedSemanticRanking ? "Fuzzy wording was used to reorder the filtered matches." : "Results use metadata filtering."}`;
 }
 
 export async function askBetterBoxd(query: string): Promise<AskBetterBoxdResult> {

@@ -18,6 +18,7 @@ export type Movie = {
   runtime?: number;
   director?: string;
   cast?: string[];
+  popularity?: number;
 };
 
 export type MovieDebugInfo = {

@@ -568,7 +568,6 @@ function App() {
               onRate={rateMovie}
               onWatchlist={toggleWatchlist}
               onOpen={openMovie}
-              debug={developerMode ? searchDebug : undefined}
             />
           </section>
         )}
