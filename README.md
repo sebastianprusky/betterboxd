@@ -6,6 +6,7 @@ BetterBoxd is a clean movie rating and recommendation web app prototype. It is p
 
 - Discover page with an embedded Taste Sprint quick-rating flow
 - TMDB-powered movie search when `VITE_TMDB_API_KEY` is configured
+- Ask BetterBoxd mode for natural-language requests with local filter parsing, TMDB discover filtering, and semantic ranking for fuzzy intent
 - Server-side OpenAI semantic search when `OPENAI_API_KEY` is configured
 - Fallback demo movie data with real poster URLs for local testing without an API key
 - Half-star rating system stored in `localStorage`

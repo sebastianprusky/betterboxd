@@ -30,6 +30,18 @@ export type MovieDebugInfo = {
 
 export type MovieDebugMap = Record<number, MovieDebugInfo>;
 
+export type AskFilter = {
+  label: string;
+  value: string;
+};
+
+export type AskBetterBoxdResult = {
+  movies: Movie[];
+  debug: MovieDebugMap;
+  filters: AskFilter[];
+  explanation: string;
+};
+
 export type RatingMap = Record<string, number>;
 
 export type WatchlistMap = Record<string, Movie>;

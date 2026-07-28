@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { fallbackMovies } from "./data/fallbackMovies";
-import { getMovieDetails, getTrendingMovies, hasTmdbKey, posterUrl, searchMoviesWithDebug } from "./services/tmdb";
-import type { InterestMap, InterestValue, Movie, MovieDebugMap, ProfileSort, RatingMap, ReviewMap, Tab, Theme, WatchedMap, WatchlistMap } from "./types";
+import { askBetterBoxd, getMovieDetails, getTrendingMovies, hasTmdbKey, posterUrl, searchMoviesWithDebug } from "./services/tmdb";
+import type { AskBetterBoxdResult, AskFilter, InterestMap, InterestValue, Movie, MovieDebugMap, ProfileSort, RatingMap, ReviewMap, Tab, Theme, WatchedMap, WatchlistMap } from "./types";
 
 type AccountMode = "unset" | "guest" | "signIn" | "create";
+type SearchMode = "movies" | "ask";
 
 const ratingsKey = "betterboxd-ratings";
 const watchlistKey = "betterboxd-watchlist";
@@ -88,6 +89,7 @@ function getRecommendationDebug(ratings: RatingMap, movies: Movie[]): MovieDebug
 }
 
 function App() {
+  const askCache = useRef<Record<string, AskBetterBoxdResult>>({});
   const [tab, setTab] = useState<Tab>("discover");
   const [theme, setTheme] = useState<Theme>(() => readJson(themeKey, "light", "cinecircle-theme"));
   const [ratings, setRatings] = useState<RatingMap>(() => readJson(ratingsKey, initialRatings, "cinecircle-ratings"));
@@ -104,8 +106,12 @@ function App() {
   const [profileSort, setProfileSort] = useState<ProfileSort>("recentlyWatched");
   const [movies, setMovies] = useState<Movie[]>(fallbackMovies);
   const [searchQuery, setSearchQuery] = useState("");
+  const [searchMode, setSearchMode] = useState<SearchMode>("movies");
   const [searchResults, setSearchResults] = useState<Movie[]>([]);
   const [searchDebug, setSearchDebug] = useState<MovieDebugMap>({});
+  const [askFilters, setAskFilters] = useState<AskFilter[]>([]);
+  const [askExplanation, setAskExplanation] = useState("");
+  const [askLoading, setAskLoading] = useState(false);
   const [quickAddOpen, setQuickAddOpen] = useState(false);
   const [selectedMovie, setSelectedMovie] = useState<Movie | null>(null);
   const [quickQuery, setQuickQuery] = useState("");
@@ -162,19 +168,82 @@ function App() {
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
     const timeout = window.setTimeout(() => {
+      const query = searchQuery.trim();
+      if (!query || query.length < 2) {
+        setSearchResults([]);
+        setSearchDebug({});
+        setAskFilters([]);
+        setAskExplanation("");
+        setAskLoading(false);
+        return;
+      }
+
+      if (searchMode === "ask") {
+        if (query.length < 4) {
+          setSearchResults([]);
+          setSearchDebug({});
+          setAskFilters([{ label: "Mode", value: "Natural language" }]);
+          setAskExplanation("Ask for a genre, year range, mood, or theme.");
+          setAskLoading(false);
+          return;
+        }
+
+        const cacheKey = query.toLowerCase();
+        const cached = askCache.current[cacheKey];
+        if (cached) {
+          setSearchResults(cached.movies);
+          setSearchDebug(cached.debug);
+          setAskFilters(cached.filters);
+          setAskExplanation(cached.explanation);
+          setAskLoading(false);
+          return;
+        }
+
+        setAskLoading(true);
+        askBetterBoxd(query)
+          .then((result) => {
+            if (cancelled) return;
+            askCache.current[cacheKey] = result;
+            setSearchResults(result.movies);
+            setSearchDebug(result.debug);
+            setAskFilters(result.filters);
+            setAskExplanation(result.explanation);
+          })
+          .catch(() => {
+            if (cancelled) return;
+            setSearchResults([]);
+            setSearchDebug({});
+            setAskFilters([{ label: "Fallback", value: "Unavailable" }]);
+            setAskExplanation("I could not understand that request yet. Try a genre, year range, mood, or title.");
+          })
+          .finally(() => {
+            if (!cancelled) setAskLoading(false);
+          });
+        return;
+      }
+
+      setAskFilters([]);
+      setAskExplanation("");
+      setAskLoading(false);
       searchMoviesWithDebug(searchQuery)
         .then((result) => {
+          if (cancelled) return;
           setSearchResults(result.movies);
           setSearchDebug(result.debug);
         })
         .catch(() => {
+          if (cancelled) return;
           setSearchResults([]);
           setSearchDebug({});
         });
-    }, 250);
-    return () => window.clearTimeout(timeout);
-  }, [searchQuery]);
+    }, searchMode === "ask" ? 650 : 250);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeout);
+    };
+  }, [searchMode, searchQuery]);
 
   useEffect(() => {
     const timeout = window.setTimeout(() => {
@@ -465,15 +534,30 @@ function App() {
 
         {tab === "search" && (
           <section className="screen">
-            <label className="field">
-              <span>Find movies</span>
-              <input
-                autoFocus
-                value={searchQuery}
-                onChange={(event) => setSearchQuery(event.target.value)}
-                placeholder="Search by title"
-              />
-            </label>
+            <div className={`search-shell ${searchMode === "ask" ? "is-ask-mode" : ""}`}>
+              <label className="field">
+                <span>{searchMode === "ask" ? "Ask BetterBoxd" : "Find movies"}</span>
+                <input
+                  autoFocus
+                  value={searchQuery}
+                  onChange={(event) => setSearchQuery(event.target.value)}
+                  placeholder={searchMode === "ask" ? "Try horror movies released in the 2010s" : "Search by title, keyword, or person"}
+                />
+              </label>
+              <SearchModeControl mode={searchMode} onChange={setSearchMode} />
+              {searchMode === "ask" && (
+                <div className="ask-summary" aria-live="polite">
+                  <div className="filter-chips">
+                    {(askFilters.length ? askFilters : [{ label: "Mode", value: "Natural language" }]).map((filter) => (
+                      <span key={`${filter.label}-${filter.value}`}>
+                        {filter.label}: {filter.value}
+                      </span>
+                    ))}
+                  </div>
+                  <p>{askLoading ? "Reading your request..." : askExplanation || "Ask for a genre, year range, mood, or theme."}</p>
+                </div>
+              )}
+            </div>
             {!hasTmdbKey() && (
               <p className="notice">Using demo poster data. Add VITE_TMDB_API_KEY to search TMDB.</p>
             )}
@@ -663,6 +747,19 @@ function App() {
           onRemoveWatchlist={() => removeFromWatchlist(detailMovie)}
         />
       )}
+    </div>
+  );
+}
+
+function SearchModeControl({ mode, onChange }: { mode: SearchMode; onChange: (mode: SearchMode) => void }) {
+  return (
+    <div className="search-mode-control" aria-label="Search mode">
+      <button className={mode === "movies" ? "is-active" : ""} onClick={() => onChange("movies")}>
+        Search movies
+      </button>
+      <button className={mode === "ask" ? "is-active" : ""} onClick={() => onChange("ask")}>
+        Ask BetterBoxd
+      </button>
     </div>
   );
 }
