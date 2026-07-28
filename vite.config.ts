@@ -1,6 +1,6 @@
 import { defineConfig, loadEnv, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
-import semanticSearchHandler from "./api/semantic-search";
+import { handleSemanticSearchRequest } from "./api/semantic-search";
 
 declare const process: { env: Record<string, string | undefined> };
 
@@ -53,7 +53,7 @@ function semanticSearchApi(): Plugin {
           headers: nodeRequest.headers as HeadersInit,
           body,
         });
-        await writeFetchResponse(await semanticSearchHandler.fetch(fetchRequest), response as NodeResponse);
+        await writeFetchResponse(await handleSemanticSearchRequest(fetchRequest), response as NodeResponse);
       });
     },
   };

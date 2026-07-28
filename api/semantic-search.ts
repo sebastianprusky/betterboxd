@@ -1,11 +1,41 @@
-import { fallbackMovies } from "../src/data/fallbackMovies";
-import type { Movie } from "../src/types";
-
 declare const process: { env: Record<string, string | undefined> };
+
+type Movie = {
+  id: number;
+  title: string;
+  year: string;
+  posterPath: string | null;
+  backdropPath?: string | null;
+  overview: string;
+  genres: string[];
+  voteAverage?: number;
+  runtime?: number;
+  director?: string;
+  cast?: string[];
+};
+
+type NodeRequest = {
+  method?: string;
+  body?: unknown;
+  url?: string;
+  headers?: Record<string, string | string[] | undefined>;
+  on?: (event: "data" | "end" | "error", callback: (chunk?: { toString: (encoding?: string) => string }) => void) => void;
+};
+
+type NodeResponse = {
+  statusCode: number;
+  setHeader: (name: string, value: string) => void;
+  end: (body?: string) => void;
+};
 
 type SemanticSearchBody = {
   query?: unknown;
   movies?: unknown;
+};
+
+type SearchResult = {
+  status: number;
+  body: unknown;
 };
 
 type OpenAIEmbedding = {
@@ -25,6 +55,12 @@ function sendJson(body: unknown, status = 200) {
   return Response.json(body, { status });
 }
 
+function sendNodeJson(response: NodeResponse, result: SearchResult) {
+  response.statusCode = result.status;
+  response.setHeader("Content-Type", "application/json");
+  response.end(JSON.stringify(result.body));
+}
+
 function isMovie(value: unknown): value is Movie {
   if (!value || typeof value !== "object") return false;
   const movie = value as Partial<Movie>;
@@ -38,7 +74,7 @@ function isMovie(value: unknown): value is Movie {
 }
 
 function normalizeCandidates(value: unknown): Movie[] {
-  const movies = Array.isArray(value) ? value.filter(isMovie) : fallbackMovies;
+  const movies = Array.isArray(value) ? value.filter(isMovie) : [];
   const seen = new Set<number>();
   return movies
     .filter((movie) => {
@@ -86,6 +122,28 @@ async function readBody(request: Request): Promise<SemanticSearchBody> {
   }
 }
 
+async function readNodeBody(request: NodeRequest): Promise<SemanticSearchBody> {
+  try {
+    if (request.body && typeof request.body === "object") return request.body as SemanticSearchBody;
+    if (typeof request.body === "string") return JSON.parse(request.body) as SemanticSearchBody;
+    if (!request.on) return {};
+
+    const chunks: string[] = [];
+    await new Promise<void>((resolve, reject) => {
+      request.on?.("data", (chunk) => {
+        if (chunk) chunks.push(chunk.toString("utf8"));
+      });
+      request.on?.("end", () => resolve());
+      request.on?.("error", () => reject(new Error("Failed to read request body")));
+    });
+
+    const rawBody = chunks.join("");
+    return rawBody ? (JSON.parse(rawBody) as SemanticSearchBody) : {};
+  } catch {
+    return {};
+  }
+}
+
 async function createEmbeddings(input: string[], apiKey: string) {
   const response = await fetch("https://api.openai.com/v1/embeddings", {
     method: "POST",
@@ -106,19 +164,18 @@ async function createEmbeddings(input: string[], apiKey: string) {
   return (data.data || []).sort((a, b) => a.index - b.index).map((item) => item.embedding);
 }
 
-export async function POST(request: Request) {
+async function searchSemantically(body: SemanticSearchBody): Promise<SearchResult> {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
-    return sendJson({ error: "Semantic search is not configured" }, 503);
+    return { status: 503, body: { error: "Semantic search is not configured" } };
   }
 
   try {
-    const body = await readBody(request);
     const query = typeof body.query === "string" ? body.query.trim() : "";
     const movies = normalizeCandidates(body.movies);
 
     if (!query) {
-      return sendJson({ movies: [] });
+      return { status: 200, body: { movies: [] } };
     }
 
     const embeddings = await createEmbeddings([query, ...movies.map(movieEmbeddingText)], apiKey);
@@ -138,10 +195,15 @@ export async function POST(request: Request) {
       .slice(0, maxResults)
       .map(({ movie }) => movie);
 
-    return sendJson({ movies: rankedMovies });
+    return { status: 200, body: { movies: rankedMovies } };
   } catch {
-    return sendJson({ error: "Semantic search request failed" }, 502);
+    return { status: 502, body: { error: "Semantic search request failed" } };
   }
+}
+
+export async function POST(request: Request) {
+  const result = await searchSemantically(await readBody(request));
+  return sendJson(result.body, result.status);
 }
 
 export function OPTIONS() {
@@ -152,10 +214,25 @@ export function GET() {
   return sendJson({ error: "Method not allowed" }, 405);
 }
 
-export default {
-  fetch(request: Request) {
-    if (request.method === "OPTIONS") return OPTIONS();
-    if (request.method === "POST") return POST(request);
-    return GET();
-  },
-};
+export function handleSemanticSearchRequest(request: Request) {
+  if (request.method === "OPTIONS") return OPTIONS();
+  if (request.method === "POST") return POST(request);
+  return GET();
+}
+
+export default async function handler(request: Request | NodeRequest, response?: NodeResponse) {
+  if (!response) return handleSemanticSearchRequest(request as Request);
+
+  if (request.method === "OPTIONS") {
+    response.statusCode = 204;
+    response.end();
+    return;
+  }
+
+  if (request.method !== "POST") {
+    sendNodeJson(response, { status: 405, body: { error: "Method not allowed" } });
+    return;
+  }
+
+  sendNodeJson(response, await searchSemantically(await readNodeBody(request as NodeRequest)));
+}
