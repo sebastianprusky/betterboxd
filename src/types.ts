@@ -20,6 +20,16 @@ export type Movie = {
   cast?: string[];
 };
 
+export type MovieDebugInfo = {
+  status: string;
+  mode: string;
+  reasonSource: string;
+  score?: number;
+  strongestSignals: string[];
+};
+
+export type MovieDebugMap = Record<number, MovieDebugInfo>;
+
 export type RatingMap = Record<string, number>;
 
 export type WatchlistMap = Record<string, Movie>;

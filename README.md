@@ -11,6 +11,7 @@ BetterBoxd is a clean movie rating and recommendation web app prototype. It is p
 - Half-star rating system stored in `localStorage`
 - Watchlist stored in `localStorage`
 - Profile page with taste stats, watchlist, and recent ratings
+- Hidden Developer mode in Profile Settings for semantic-search and recommender diagnostics
 - Persistent `+ Watched` quick-add flow
 - Light/dark theme toggle with a pale green accent
 - Responsive layout for phone and desktop

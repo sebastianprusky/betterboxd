@@ -38,6 +38,12 @@ type SearchResult = {
   body: unknown;
 };
 
+type EmbeddingResult = {
+  embeddings: number[][];
+  remoteCount: number;
+  cachedCount: number;
+};
+
 type RequestContext = {
   rateLimitKey: string;
 };
@@ -303,22 +309,26 @@ function writeEmbeddingCache(input: string, embedding: number[]) {
   entriesToRemove.forEach(([key]) => embeddingCache.delete(key));
 }
 
-async function createEmbeddings(input: string[], apiKey: string) {
+async function createEmbeddings(input: string[], apiKey: string): Promise<EmbeddingResult> {
   const embeddings = new Array<number[] | null>(input.length).fill(null);
   const missingInputs: string[] = [];
   const missingIndexes: number[] = [];
+  let cachedCount = 0;
 
   input.forEach((value, index) => {
     const cachedEmbedding = readEmbeddingCache(value);
     if (cachedEmbedding) {
       embeddings[index] = cachedEmbedding;
+      cachedCount += 1;
       return;
     }
     missingInputs.push(value);
     missingIndexes.push(index);
   });
 
-  if (!missingInputs.length) return embeddings as number[][];
+  if (!missingInputs.length) {
+    return { embeddings: embeddings as number[][], cachedCount, remoteCount: 0 };
+  }
 
   const response = await fetch("https://api.openai.com/v1/embeddings", {
     method: "POST",
@@ -346,7 +356,7 @@ async function createEmbeddings(input: string[], apiKey: string) {
     writeEmbeddingCache(inputValue, embedding);
   });
 
-  return embeddings as number[][];
+  return { embeddings: embeddings as number[][], cachedCount, remoteCount: missingInputs.length };
 }
 
 async function searchSemantically(body: SemanticSearchBody, context: RequestContext): Promise<SearchResult> {
@@ -367,7 +377,8 @@ async function searchSemantically(body: SemanticSearchBody, context: RequestCont
       return { status: 200, body: { movies: [] } };
     }
 
-    const embeddings = await createEmbeddings([query, ...movies.map(movieEmbeddingText)], apiKey);
+    const embeddingResult = await createEmbeddings([query, ...movies.map(movieEmbeddingText)], apiKey);
+    const embeddings = embeddingResult.embeddings;
     const queryEmbedding = embeddings[0];
     const movieEmbeddings = embeddings.slice(1);
 
@@ -375,18 +386,32 @@ async function searchSemantically(body: SemanticSearchBody, context: RequestCont
       throw new Error("OpenAI embedding response was incomplete");
     }
 
-    const rankedMovies = movies
+    const ranked = movies
       .map((movie, index) => ({
         movie,
         score: cosineSimilarity(queryEmbedding, movieEmbeddings[index] || []),
       }))
       .sort((a, b) => b.score - a.score)
-      .slice(0, maxResults)
-      .map(({ movie }) => movie);
+      .slice(0, maxResults);
 
-    return { status: 200, body: { movies: rankedMovies } };
+    return {
+      status: 200,
+      body: {
+        movies: ranked.map(({ movie }) => movie),
+        debug: {
+          status: "openai",
+          mode: "semantic-embedding",
+          model: embeddingModel,
+          candidateCount: movies.length,
+          remoteEmbeddingCount: embeddingResult.remoteCount,
+          cachedEmbeddingCount: embeddingResult.cachedCount,
+          reasonSource: "OpenAI embeddings ranked by cosine similarity",
+          scores: Object.fromEntries(ranked.map(({ movie, score }) => [movie.id, Number(score.toFixed(4))])),
+        },
+      },
+    };
   } catch {
-    return { status: 502, body: { error: "Semantic search request failed" } };
+    return { status: 502, body: { error: "Semantic search request failed", debug: { status: "openai-error", mode: "local-fallback" } } };
   }
 }
 

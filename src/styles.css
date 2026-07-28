@@ -699,6 +699,37 @@ button.poster:hover,
   color: var(--accent-text);
 }
 
+.developer-toggle {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: center;
+  border-top: 1px solid var(--line);
+  padding-top: 14px;
+}
+
+.developer-toggle span {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.developer-toggle strong,
+.developer-toggle small {
+  overflow-wrap: anywhere;
+}
+
+.developer-toggle small {
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.developer-toggle input {
+  width: 20px;
+  height: 20px;
+  accent-color: var(--accent-strong);
+}
+
 .sort-tabs {
   display: flex;
   flex-wrap: wrap;
@@ -833,6 +864,45 @@ button.poster:hover,
   color: var(--text);
   font-size: 0.82rem;
   font-weight: 900;
+}
+
+.debug-panel {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-soft);
+  padding: 8px;
+  color: var(--muted);
+  font-size: 0.72rem;
+  line-height: 1.35;
+}
+
+.debug-panel > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.debug-panel span {
+  max-width: 100%;
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text);
+  padding: 3px 6px;
+  font-weight: 900;
+  overflow-wrap: anywhere;
+}
+
+.debug-panel p,
+.debug-panel small {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.debug-panel small {
+  color: var(--muted);
 }
 
 .compact-rating {
@@ -1318,5 +1388,14 @@ button.poster:hover,
 
   .account-actions {
     grid-template-columns: 1fr;
+  }
+
+  .developer-toggle {
+    align-items: start;
+  }
+
+  .debug-panel {
+    padding: 7px;
+    font-size: 0.68rem;
   }
 }

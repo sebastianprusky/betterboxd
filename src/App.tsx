@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { fallbackMovies } from "./data/fallbackMovies";
-import { getMovieDetails, getTrendingMovies, hasTmdbKey, posterUrl, searchMovies } from "./services/tmdb";
-import type { InterestMap, InterestValue, Movie, ProfileSort, RatingMap, ReviewMap, Tab, Theme, WatchedMap, WatchlistMap } from "./types";
+import { getMovieDetails, getTrendingMovies, hasTmdbKey, posterUrl, searchMoviesWithDebug } from "./services/tmdb";
+import type { InterestMap, InterestValue, Movie, MovieDebugMap, ProfileSort, RatingMap, ReviewMap, Tab, Theme, WatchedMap, WatchlistMap } from "./types";
 
 type AccountMode = "unset" | "guest" | "signIn" | "create";
 
@@ -13,6 +13,7 @@ const watchedKey = "betterboxd-watched";
 const interestKey = "betterboxd-interest";
 const accountModeKey = "betterboxd-account-mode";
 const accountEmailKey = "betterboxd-account-email";
+const developerModeKey = "betterboxd-developer-mode";
 
 const initialRatings: RatingMap = {
   "496243": 4.5,
@@ -36,12 +37,7 @@ function getTopGenre(ratings: RatingMap, movies: Movie[]) {
 }
 
 function recommendMovies(ratings: RatingMap, movies: Movie[]) {
-  const weights = new Map<string, number>();
-  movies.forEach((movie) => {
-    const rating = ratings[movie.id];
-    if (!rating) return;
-    movie.genres.forEach((genre) => weights.set(genre, (weights.get(genre) || 0) + rating));
-  });
+  const weights = getGenreWeights(ratings, movies);
 
   return movies
     .filter((movie) => !ratings[movie.id])
@@ -52,6 +48,43 @@ function recommendMovies(ratings: RatingMap, movies: Movie[]) {
     .sort((a, b) => b.score - a.score)
     .slice(0, 6)
     .map(({ movie }) => movie);
+}
+
+function getGenreWeights(ratings: RatingMap, movies: Movie[]) {
+  const weights = new Map<string, number>();
+  movies.forEach((movie) => {
+    const rating = ratings[movie.id];
+    if (!rating) return;
+    movie.genres.forEach((genre) => weights.set(genre, (weights.get(genre) || 0) + rating));
+  });
+  return weights;
+}
+
+function getRecommendationDebug(ratings: RatingMap, movies: Movie[]): MovieDebugMap {
+  const weights = getGenreWeights(ratings, movies);
+  return Object.fromEntries(
+    movies.map((movie) => {
+      const genreSignals = movie.genres
+        .map((genre) => ({ genre, weight: weights.get(genre) || 0 }))
+        .filter(({ weight }) => weight > 0)
+        .sort((a, b) => b.weight - a.weight)
+        .slice(0, 3);
+      const score = genreSignals.reduce((total, signal) => total + signal.weight, 0) + (movie.voteAverage || 0) / 10;
+
+      return [
+        movie.id,
+        {
+          status: "local",
+          mode: "taste-profile",
+          score: Number(score.toFixed(2)),
+          strongestSignals: genreSignals.length
+            ? genreSignals.map(({ genre, weight }) => `${genre}:${weight.toFixed(1)}`)
+            : [`vote:${((movie.voteAverage || 0) / 10).toFixed(2)}`],
+          reasonSource: "Ratings-weighted genre affinity plus TMDB vote average",
+        },
+      ];
+    })
+  );
 }
 
 function App() {
@@ -66,11 +99,13 @@ function App() {
   const [accountFormMode, setAccountFormMode] = useState<Exclude<AccountMode, "unset" | "guest">>("create");
   const [accountEmail, setAccountEmail] = useState(() => readJson(accountEmailKey, ""));
   const [accountEmailDraft, setAccountEmailDraft] = useState(accountEmail);
+  const [developerMode, setDeveloperMode] = useState(() => readJson(developerModeKey, false));
   const [saveStatus, setSaveStatus] = useState("Saved on this device");
   const [profileSort, setProfileSort] = useState<ProfileSort>("recentlyWatched");
   const [movies, setMovies] = useState<Movie[]>(fallbackMovies);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<Movie[]>([]);
+  const [searchDebug, setSearchDebug] = useState<MovieDebugMap>({});
   const [quickAddOpen, setQuickAddOpen] = useState(false);
   const [selectedMovie, setSelectedMovie] = useState<Movie | null>(null);
   const [quickQuery, setQuickQuery] = useState("");
@@ -113,6 +148,10 @@ function App() {
   }, [accountEmail]);
 
   useEffect(() => {
+    localStorage.setItem(developerModeKey, JSON.stringify(developerMode));
+  }, [developerMode]);
+
+  useEffect(() => {
     if (saveStatus === "Saved on this device") return;
     const timeout = window.setTimeout(() => setSaveStatus("Saved on this device"), 3200);
     return () => window.clearTimeout(timeout);
@@ -124,14 +163,22 @@ function App() {
 
   useEffect(() => {
     const timeout = window.setTimeout(() => {
-      searchMovies(searchQuery).then(setSearchResults).catch(() => setSearchResults([]));
+      searchMoviesWithDebug(searchQuery)
+        .then((result) => {
+          setSearchResults(result.movies);
+          setSearchDebug(result.debug);
+        })
+        .catch(() => {
+          setSearchResults([]);
+          setSearchDebug({});
+        });
     }, 250);
     return () => window.clearTimeout(timeout);
   }, [searchQuery]);
 
   useEffect(() => {
     const timeout = window.setTimeout(() => {
-      searchMovies(quickQuery).then((results) => setQuickResults(results.length ? results : fallbackMovies.slice(0, 5)));
+      searchMoviesWithDebug(quickQuery).then((result) => setQuickResults(result.movies.length ? result.movies : fallbackMovies.slice(0, 5)));
     }, 200);
     return () => window.clearTimeout(timeout);
   }, [quickQuery]);
@@ -152,6 +199,7 @@ function App() {
   }, [movies, searchResults, quickResults, watchlist, watched, interest, detailMovie]);
 
   const recommendations = useMemo(() => recommendMovies(ratings, allKnownMovies), [ratings, allKnownMovies]);
+  const recommendationDebug = useMemo(() => getRecommendationDebug(ratings, recommendations), [ratings, recommendations]);
   const topGenre = useMemo(() => getTopGenre(ratings, allKnownMovies), [ratings, allKnownMovies]);
   const sprintQueue = recommendations.length ? recommendations : movies.filter((movie) => !ratings[movie.id]);
   const sprintMovie = sprintQueue[sprintIndex % Math.max(sprintQueue.length, 1)];
@@ -200,6 +248,11 @@ function App() {
     setAccountEmail(normalizedEmail);
     setAccountMode(accountFormMode);
     announceSave("Account email saved");
+  }
+
+  function toggleDeveloperMode(enabled: boolean) {
+    setDeveloperMode(enabled);
+    announceSave(`Developer mode ${enabled ? "enabled" : "disabled"}`);
   }
 
   function rateMovie(movie: Movie, rating: number) {
@@ -404,6 +457,7 @@ function App() {
                 onRate={rateMovie}
                 onWatchlist={toggleWatchlist}
                 onOpen={openMovie}
+                debug={developerMode ? recommendationDebug : undefined}
               />
             </div>
           </section>
@@ -430,6 +484,7 @@ function App() {
               onRate={rateMovie}
               onWatchlist={toggleWatchlist}
               onOpen={openMovie}
+              debug={developerMode ? searchDebug : undefined}
             />
           </section>
         )}
@@ -442,10 +497,12 @@ function App() {
               email={accountEmail}
               emailDraft={accountEmailDraft}
               saveStatus={saveStatus}
+              developerMode={developerMode}
               onEmailDraftChange={setAccountEmailDraft}
               onChooseGuest={chooseGuestMode}
               onPrepareAccount={prepareAccountMode}
               onSubmitEmail={submitAccountEmail}
+              onToggleDeveloperMode={toggleDeveloperMode}
             />
 
             <section className="movie-section profile-list">
@@ -469,6 +526,7 @@ function App() {
                 onRate={rateMovie}
                 onWatchlist={toggleWatchlist}
                 onOpen={openMovie}
+                debug={developerMode ? getRecommendationDebug(ratings, profileMovies) : undefined}
               />
               {!profileMovies.length && <p className="empty">Mark a movie watched to start your profile.</p>}
             </section>
@@ -488,6 +546,7 @@ function App() {
                   onRate={rateMovie}
                   onWatchlist={toggleWatchlist}
                   onOpen={openMovie}
+                  debug={developerMode ? getRecommendationDebug(ratings, Object.values(watchlist)) : undefined}
                 />
               ) : (
                 <p className="empty">Your watchlist is empty.</p>
@@ -614,20 +673,24 @@ function AccountSettings({
   email,
   emailDraft,
   saveStatus,
+  developerMode,
   onEmailDraftChange,
   onChooseGuest,
   onPrepareAccount,
   onSubmitEmail,
+  onToggleDeveloperMode,
 }: {
   mode: AccountMode;
   formMode: Exclude<AccountMode, "unset" | "guest">;
   email: string;
   emailDraft: string;
   saveStatus: string;
+  developerMode: boolean;
   onEmailDraftChange: (email: string) => void;
   onChooseGuest: () => void;
   onPrepareAccount: (mode: Exclude<AccountMode, "unset" | "guest">) => void;
   onSubmitEmail: (email: string) => void;
+  onToggleDeveloperMode: (enabled: boolean) => void;
 }) {
   const accountActionLabel = formMode === "create" ? "Create account" : "Sign in";
   const accountStatus =
@@ -687,6 +750,14 @@ function AccountSettings({
           <p>Account sync is ready for the future Supabase flow. Until auth is connected, changes are saved locally.</p>
         </form>
       </div>
+
+      <label className="developer-toggle">
+        <span>
+          <strong>Developer mode</strong>
+          <small>Show recommender and semantic-search diagnostics on movie cards.</small>
+        </span>
+        <input type="checkbox" checked={developerMode} onChange={(event) => onToggleDeveloperMode(event.target.checked)} />
+      </label>
     </section>
   );
 }
@@ -698,6 +769,7 @@ function MovieSection(props: {
   ratings: RatingMap;
   watchlist: WatchlistMap;
   watched?: WatchedMap;
+  debug?: MovieDebugMap;
   empty?: string;
   onRate: (movie: Movie, rating: number) => void;
   onWatchlist: (movie: Movie) => void;
@@ -726,6 +798,7 @@ function MovieGrid(props: {
   ratings: RatingMap;
   watchlist: WatchlistMap;
   watched?: WatchedMap;
+  debug?: MovieDebugMap;
   onRate: (movie: Movie, rating: number) => void;
   onWatchlist: (movie: Movie) => void;
   onOpen: (movie: Movie) => void;
@@ -748,9 +821,24 @@ function MovieGrid(props: {
               <button onClick={() => props.onMarkWatched?.(movie)}>{props.watched?.[movie.id] ? "Watched" : "Mark watched"}</button>
             )}
           </div>
+          {props.debug?.[movie.id] && <DebugPanel debug={props.debug[movie.id]} />}
           <RatingPicker compact value={props.ratings[movie.id]} onChange={(rating) => props.onRate(movie, rating)} />
         </article>
       ))}
+    </div>
+  );
+}
+
+function DebugPanel({ debug }: { debug: NonNullable<MovieDebugMap[number]> }) {
+  return (
+    <div className="debug-panel" aria-label="Developer recommender details">
+      <div>
+        <span>{debug.status}</span>
+        <span>{debug.mode}</span>
+        {typeof debug.score === "number" && <span>score {debug.score}</span>}
+      </div>
+      <p>{debug.reasonSource}</p>
+      <small>{debug.strongestSignals.join(" · ")}</small>
     </div>
   );
 }
