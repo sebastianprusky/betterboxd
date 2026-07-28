@@ -38,6 +38,8 @@ OPENAI_API_KEY=your_server_side_openai_api_key_here
 
 `OPENAI_API_KEY` must remain server-side only. The browser calls `/api/semantic-search`, and the app falls back to local movie matching when the key is absent or the server route is unavailable.
 
+The semantic search route is public, so it applies request-size, field-length, candidate-count, warm-instance cache, and basic per-IP rate-limit controls before calling OpenAI. Vercel serverless instances do not share memory globally, so configure provider spend limits before enabling billing.
+
 Run the app:
 
 ```bash
