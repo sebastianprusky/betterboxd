@@ -152,7 +152,7 @@ function titleRelevanceScore(query: string, movie: Movie) {
   const phraseIsShort = normalizedQuery.length <= 3;
 
   if (title === normalizedQuery) return 22000;
-  if (titleWords.includes(normalizedQuery)) return 19000;
+  if (titleWords.includes(normalizedQuery)) return phraseIsShort ? 9000 : 19000;
   if (title.startsWith(`${normalizedQuery} `) || title.startsWith(normalizedQuery)) return 12500;
 
   const prefixMatches = queryWords.filter((word) => titleWords.some((titleWord) => titleWord.startsWith(word))).length;
@@ -239,10 +239,14 @@ export async function searchMoviesWithDebug(query: string): Promise<SearchWithDe
   }
 
   try {
-    const data = await tmdbFetch(`/search/multi?query=${encodeURIComponent(query)}&include_adult=false`);
-    if (!data) return searchMoviesWithDebugFromFallback(query);
+    const pageCount = query.trim().length <= 3 ? 5 : 2;
+    const pages = await Promise.all(
+      Array.from({ length: pageCount }, (_, index) => tmdbFetch(`/search/multi?query=${encodeURIComponent(query)}&include_adult=false&page=${index + 1}`))
+    );
+    const rawResults = pages.flatMap((data) => data?.results || []);
+    if (!rawResults.length) return searchMoviesWithDebugFromFallback(query);
 
-    const candidates = data.results.flatMap((item: TmdbMovie & { media_type?: string; known_for?: TmdbMovie[] }, sourceRank: number) => {
+    const candidates = rawResults.flatMap((item: TmdbMovie & { media_type?: string; known_for?: TmdbMovie[] }, sourceRank: number) => {
       if (item.media_type === "movie") return [{ movie: mapMovie(item), sourceRank }];
       if (item.media_type === "person") {
         return (item.known_for || []).map((movie) => ({ movie: mapMovie(movie), sourceRank, personMatch: true }));
