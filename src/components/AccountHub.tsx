@@ -12,17 +12,16 @@ import {
   removeFriend,
   respondToFriendRequest,
   searchPublicProfiles,
-  sendPasswordReset,
   sendFriendRequest,
+  signInWithGoogle,
   signInWithPassword,
-  signUpWithPassword,
   updatePassword,
   updateProfilePrivacy,
   updateProfileIdentity,
 } from "../services/supabase";
 import type { CloudUserState, FriendRequest, Friendship, UserProfile } from "../types";
 
-type AuthMode = "signIn" | "create" | "reset" | "setPassword";
+type AuthMode = "signIn" | "setPassword";
 
 type AccountHubProps = {
   configured: boolean;
@@ -60,6 +59,7 @@ export function AccountHub({
   const [menuOpen, setMenuOpen] = useState(false);
   const [signInOpen, setSignInOpen] = useState(false);
   const [authMode, setAuthMode] = useState<AuthMode>("signIn");
+  const [emailFallbackOpen, setEmailFallbackOpen] = useState(false);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [passwordConfirmation, setPasswordConfirmation] = useState("");
@@ -95,15 +95,6 @@ export function AccountHub({
     .slice(0, 2)
     .map((part) => part[0]?.toUpperCase())
     .join("");
-  const authSummary =
-    authMode === "create"
-      ? "Confirm by email, then choose a username."
-      : authMode === "reset"
-        ? "Reset an existing account."
-        : authMode === "setPassword"
-          ? "Choose a new password."
-          : "";
-
   useEffect(() => {
     if (typeof window === "undefined") return;
     const recoveryMarkers = [window.location.hash, window.location.search].join("&");
@@ -149,56 +140,7 @@ export function AccountHub({
     window.history.replaceState({}, document.title, url.pathname + url.search);
   }
 
-  function authErrorText(error: unknown) {
-    if (!error || typeof error !== "object") return "";
-    const details = error as { message?: unknown; code?: unknown; status?: unknown; name?: unknown };
-    return [details.message, details.code, details.status, details.name]
-      .filter((value) => value !== undefined && value !== null)
-      .join(" ")
-      .toLowerCase();
-  }
-
-  function isRateLimited(message: string) {
-    return message.includes("rate limit") || message.includes("too many") || message.includes("429");
-  }
-
-  function isEmailDeliveryBlocked(message: string) {
-    return (
-      message.includes("email address not authorized") ||
-      message.includes("email not authorized") ||
-      message.includes("not authorized") ||
-      message.includes("smtp") ||
-      message.includes("email provider") ||
-      message.includes("mail")
-    );
-  }
-
-  function normalizeAuthError(error: unknown, mode: AuthMode) {
-    const message = authErrorText(error);
-    if (mode === "create") {
-      if (message.includes("already") || message.includes("registered")) {
-        return "Account may already exist. Reset your password instead.";
-      }
-      if (isRateLimited(message)) {
-        return "Too many confirmation emails were requested. Wait a bit and try again.";
-      }
-      if (isEmailDeliveryBlocked(message)) {
-        return "BetterBoxd cannot send confirmation emails right now. Try again later.";
-      }
-      if (message.includes("signup") && message.includes("disabled")) {
-        return "New account creation is temporarily unavailable.";
-      }
-      return "Could not create account. Check your email and password.";
-    }
-    if (mode === "reset") {
-      if (isRateLimited(message)) {
-        return "Too many reset emails were requested. Wait a bit and try again.";
-      }
-      if (isEmailDeliveryBlocked(message)) {
-        return "BetterBoxd cannot send reset emails right now. Try again later.";
-      }
-      return "If an account exists, a reset link could not be sent right now.";
-    }
+  function normalizeAuthError(_error: unknown, mode: AuthMode) {
     if (mode === "setPassword") {
       return "Could not update the password. Open the latest reset link and try again.";
     }
@@ -208,24 +150,17 @@ export function AccountHub({
   async function submitAuth(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!configured) return;
-    if (authMode !== "setPassword" && !email.trim()) {
+    if (authMode === "signIn" && !email.trim()) {
       setAccountMessage("Enter your email address.");
       return;
     }
     if (authMode === "signIn" && !validatePasswordPair(false)) return;
-    if (authMode === "create" && !validatePasswordPair(true)) return;
     if (authMode === "setPassword" && !validatePasswordPair(true)) return;
     setBusy(true);
     try {
       if (authMode === "signIn") {
         await signInWithPassword(email.trim(), password);
         setAccountMessage("");
-      } else if (authMode === "create") {
-        await signUpWithPassword(email.trim(), password);
-        setAccountMessage("Check your email to confirm your account.");
-      } else if (authMode === "reset") {
-        await sendPasswordReset(email.trim());
-        setAccountMessage("If an account exists, a reset link will be sent.");
       } else {
         await updatePassword(password);
         setPassword("");
@@ -241,16 +176,22 @@ export function AccountHub({
     }
   }
 
-  function openAuth(nextMode: AuthMode = "signIn") {
-    setAuthMode(nextMode);
-    setSignInOpen(true);
+  async function continueWithGoogle() {
+    if (!configured) return;
+    setBusy(true);
     setAccountMessage("");
-    setPassword("");
-    setPasswordConfirmation("");
+    try {
+      await signInWithGoogle();
+    } catch (error) {
+      setAccountMessage(error instanceof Error ? error.message : "Could not start Google sign-in.");
+      setBusy(false);
+    }
   }
 
-  function switchAuthMode(nextMode: AuthMode) {
+  function openAuth(nextMode: AuthMode = "signIn", showEmailFallback = false) {
     setAuthMode(nextMode);
+    setEmailFallbackOpen(showEmailFallback);
+    setSignInOpen(true);
     setAccountMessage("");
     setPassword("");
     setPasswordConfirmation("");
@@ -361,7 +302,7 @@ export function AccountHub({
                   <p>Saved on this device.</p>
                   <div className="account-actions">
                     <button onClick={() => { onSettingsOpenChange(false); openAuth("signIn"); }}>Sign in</button>
-                    <button onClick={() => { onSettingsOpenChange(false); openAuth("create"); }}>Create account</button>
+                    <button onClick={() => onSettingsOpenChange(false)}>Continue as guest</button>
                   </div>
                 </>
               )}
@@ -406,47 +347,39 @@ export function AccountHub({
               <div>
                 <p className="kicker">Account sync</p>
                 <h2 id="signin-title">
-                  {authMode === "create" ? "Create account" : authMode === "reset" ? "Reset password" : authMode === "setPassword" ? "Set password" : "Sign in"}
+                  {authMode === "setPassword" ? "Set password" : "Sign in"}
                 </h2>
               </div>
               <button onClick={() => setSignInOpen(false)}>Close</button>
             </div>
             {authMode !== "setPassword" && (
-              <div className="auth-mode-toggle" role="tablist" aria-label="Account mode">
-                <button type="button" className={authMode === "signIn" ? "active" : ""} onClick={() => switchAuthMode("signIn")}>Sign in</button>
-                <button type="button" className={authMode === "create" ? "active" : ""} onClick={() => switchAuthMode("create")}>Create account</button>
+              <div className="auth-primary-actions">
+                <button type="button" className="google-button" onClick={continueWithGoogle} disabled={!configured || busy}>
+                  {busy ? "Opening Google…" : "Continue with Google"}
+                </button>
+                <button type="button" className="guest-button" onClick={() => setSignInOpen(false)}>Continue as guest</button>
               </div>
             )}
-            {authSummary && <p className="auth-summary">{authSummary}</p>}
-            <form className="auth-stack" onSubmit={submitAuth}>
-              {authMode !== "setPassword" && (
-                <label><span>Email</span><input type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="you@example.com" autoComplete="email" /></label>
-              )}
-              {authMode !== "reset" && (
-                <label><span>Password</span><input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete={authMode === "create" || authMode === "setPassword" ? "new-password" : "current-password"} /></label>
-              )}
-              {(authMode === "create" || authMode === "setPassword") && (
-                <label><span>Confirm password</span><input type="password" value={passwordConfirmation} onChange={(event) => setPasswordConfirmation(event.target.value)} autoComplete="new-password" /></label>
-              )}
-              <button type="submit" disabled={!configured || busy}>
-                {busy
-                  ? "Working…"
-                  : authMode === "create"
-                    ? "Create account"
-                    : authMode === "reset"
-                      ? "Send reset link"
-                      : authMode === "setPassword"
-                        ? "Save password"
-                        : "Sign in"}
-              </button>
-            </form>
+            {(authMode === "setPassword" || emailFallbackOpen) && (
+              <form className="auth-stack" onSubmit={submitAuth}>
+                {authMode !== "setPassword" && (
+                  <label><span>Email</span><input type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="you@example.com" autoComplete="email" /></label>
+                )}
+                <label><span>Password</span><input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete={authMode === "setPassword" ? "new-password" : "current-password"} /></label>
+                {authMode === "setPassword" && (
+                  <label><span>Confirm password</span><input type="password" value={passwordConfirmation} onChange={(event) => setPasswordConfirmation(event.target.value)} autoComplete="new-password" /></label>
+                )}
+                <button type="submit" disabled={!configured || busy}>
+                  {busy ? "Working…" : authMode === "setPassword" ? "Save password" : "Sign in with email"}
+                </button>
+              </form>
+            )}
             {!configured && <p className="notice">Account sync is unavailable until Supabase environment variables are configured.</p>}
             {accountMessage && <p className="account-message" role="status">{accountMessage}</p>}
             <div className="auth-links">
-              {authMode === "signIn" && <button type="button" onClick={() => switchAuthMode("reset")}>Reset password</button>}
-              {authMode === "create" && <button type="button" onClick={() => switchAuthMode("reset")}>Already have an account?</button>}
-              {authMode === "reset" && <button type="button" onClick={() => switchAuthMode("signIn")}>Back to sign in</button>}
-              <button type="button" onClick={() => setSignInOpen(false)}>Continue as guest</button>
+              {authMode === "signIn" && !emailFallbackOpen && <button type="button" onClick={() => setEmailFallbackOpen(true)}>Email sign in</button>}
+              {authMode === "signIn" && emailFallbackOpen && <button type="button" onClick={() => setEmailFallbackOpen(false)}>Hide email sign in</button>}
+              <button type="button" onClick={() => setSignInOpen(false)}>Close</button>
             </div>
           </section>
         </div>

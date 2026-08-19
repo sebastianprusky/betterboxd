@@ -17,7 +17,7 @@ VITE_SUPABASE_URL=your_project_url
 VITE_SUPABASE_ANON_KEY=your_anon_public_key
 ```
 
-8. Configure auth redirect URLs for email confirmation and password recovery, then redeploy the Vercel project.
+8. Configure auth redirect URLs for Google OAuth, then redeploy the Vercel project.
 
 ## Auth URL Settings
 
@@ -30,7 +30,25 @@ https://i-want-to-make-a-better.vercel.app
 https://betterboxd-sebastian-a6gp1ld08-sebastian-pruskys-projects.vercel.app
 ```
 
-The app passes the current deployed origin for password recovery redirects. Add each production and preview origin that should accept Supabase auth callbacks.
+The app passes the current deployed origin for Google OAuth redirects and legacy password-recovery redirects. Add each production and preview origin that should accept Supabase auth callbacks.
+
+## Google Sign-In
+
+BetterBoxd’s public account flow is Google-first so sign-up does not depend on Supabase’s default auth email sender. In Supabase, enable Authentication > Sign In / Providers > Google only after a Google OAuth client exists.
+
+Use the production Supabase callback URL in Google Cloud as an authorized redirect URI:
+
+```text
+https://rkkqbfuxorbunwewyowm.supabase.co/auth/v1/callback
+```
+
+Use the public Vercel app as an authorized JavaScript origin:
+
+```text
+https://i-want-to-make-a-better.vercel.app
+```
+
+After Google redirects back, the app still requires the user to choose a unique public username before profile provisioning and guest-data merge. Email remains private and is not stored in `public.profiles`.
 
 ## Creator Account Overview
 
@@ -45,9 +63,9 @@ Do not prefix the service-role key with `VITE_`. The browser dashboard sends the
 
 ## Auth and Public Identity
 
-The app uses Supabase email/password auth. After the first authenticated session, the user must claim a unique lowercase username before profile provisioning and local-data merge. Email remains in Supabase Auth and is never stored in `public.profiles` or returned by social search.
+The app uses Supabase Google OAuth for public sign-in. Email/password sign-in is retained only as an existing-account fallback; public email/password account creation and reset links require production SMTP and should remain hidden until that delivery path is configured. After the first authenticated session, the user must claim a unique lowercase username before profile provisioning and local-data merge. Email remains in Supabase Auth and is never stored in `public.profiles` or returned by social search.
 
-Users who previously authenticated with email links should choose **Reset password** instead of **Create account**. Supabase recovery sets a password on the existing verified email account, preserving the original auth user id, profile, username, friend graph, and merge receipts. BetterBoxd never asks an operator to set or handle a user's password.
+Users who previously authenticated with email links can only use password recovery after production SMTP is configured. Supabase recovery sets a password on the existing verified email account, preserving the original auth user id, profile, username, friend graph, and merge receipts. BetterBoxd never asks an operator to set or handle a user's password.
 
 Users can always continue as guests. Guest activity remains local and no sign-in prompt interrupts Discover or Search.
 
