@@ -28,12 +28,14 @@ type AccountHubProps = {
   configured: boolean;
   session: AuthSession | null;
   profile: UserProfile | null | undefined;
+  passwordRecoveryActive: boolean;
   syncStatus: string;
   mergeNotice: string;
   developerMode: boolean;
   settingsOpen: boolean;
   onSettingsOpenChange: (open: boolean) => void;
   onProfileChange: (profile: UserProfile | null) => void;
+  onPasswordRecoveryHandled: () => void;
   onOpenProfile: () => void;
   onSignOut: () => Promise<void>;
   onToggleDeveloperMode: (enabled: boolean) => void;
@@ -43,12 +45,14 @@ export function AccountHub({
   configured,
   session,
   profile,
+  passwordRecoveryActive,
   syncStatus,
   mergeNotice,
   developerMode,
   settingsOpen,
   onSettingsOpenChange,
   onProfileChange,
+  onPasswordRecoveryHandled,
   onOpenProfile,
   onSignOut,
   onToggleDeveloperMode,
@@ -91,6 +95,14 @@ export function AccountHub({
     .slice(0, 2)
     .map((part) => part[0]?.toUpperCase())
     .join("");
+  const authSummary =
+    authMode === "create"
+      ? "Confirm by email, then choose a username."
+      : authMode === "reset"
+        ? "Reset an existing account."
+        : authMode === "setPassword"
+          ? "Choose a new password."
+          : "";
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -98,9 +110,16 @@ export function AccountHub({
     if (/type=recovery|type=password_recovery/.test(recoveryMarkers)) {
       setAuthMode("setPassword");
       setSignInOpen(true);
-      setAccountMessage("Set a password to finish updating your BetterBoxd sign-in.");
+      setAccountMessage("Set a new password.");
     }
   }, []);
+
+  useEffect(() => {
+    if (!passwordRecoveryActive) return;
+    setAuthMode("setPassword");
+    setSignInOpen(true);
+    setAccountMessage("Set a new password.");
+  }, [passwordRecoveryActive]);
 
   useEffect(() => {
     if (session && signInOpen && authMode !== "setPassword") {
@@ -122,21 +141,29 @@ export function AccountHub({
     return true;
   }
 
+  function clearRecoveryUrl() {
+    if (typeof window === "undefined") return;
+    const url = new URL(window.location.href);
+    url.searchParams.delete("type");
+    url.hash = "";
+    window.history.replaceState({}, document.title, url.pathname + url.search);
+  }
+
   function normalizeAuthError(error: unknown, mode: AuthMode) {
     const message = error instanceof Error ? error.message.toLowerCase() : "";
     if (mode === "create") {
       if (message.includes("already") || message.includes("registered")) {
-        return "An account may already exist for this email. Use Reset password to set a password for that same account.";
+        return "Account may already exist. Reset your password instead.";
       }
-      return "Could not create the account. Check the email and password, or try Reset password if this email was used before.";
+      return "Could not create account. Check your email and password.";
     }
     if (mode === "reset") {
-      return "Could not send the password reset email. Check the address and try again.";
+      return "Could not send reset email. Check the address and try again.";
     }
     if (mode === "setPassword") {
       return "Could not update the password. Open the latest reset link and try again.";
     }
-    return "Could not sign in. Check the email and password, or use Reset password if this account used email links before.";
+    return "Could not sign in. Check your email and password.";
   }
 
   async function submitAuth(event: FormEvent<HTMLFormElement>) {
@@ -156,18 +183,17 @@ export function AccountHub({
         setAccountMessage("");
       } else if (authMode === "create") {
         await signUpWithPassword(email.trim(), password);
-        setAccountMessage("Account created. If email confirmation is enabled, confirm your email, then sign in.");
+        setAccountMessage("Check your email to confirm your account.");
       } else if (authMode === "reset") {
         await sendPasswordReset(email.trim());
-        setAccountMessage("If an account exists for that email, a password reset link will be sent.");
+        setAccountMessage("If an account exists, a reset link will be sent.");
       } else {
         await updatePassword(password);
         setPassword("");
         setPasswordConfirmation("");
-        setAccountMessage("Password updated. Your existing BetterBoxd account is ready to use.");
-        if (typeof window !== "undefined") {
-          window.history.replaceState({}, document.title, window.location.pathname + window.location.search.replace(/[?&]type=[^&]+/, ""));
-        }
+        onPasswordRecoveryHandled();
+        clearRecoveryUrl();
+        setAccountMessage("Password updated.");
       }
     } catch (error) {
       setAccountMessage(normalizeAuthError(error, authMode));
@@ -287,14 +313,17 @@ export function AccountHub({
               {session ? (
                 <>
                   <strong>{session.user.email}</strong>
-                  <p>Your email is private and is never shown in search or on your profile.</p>
+                  <p>Email is private.</p>
                   <button onClick={onSignOut} disabled={busy}>Sign out</button>
                 </>
               ) : (
                 <>
                   <strong>Not signed in</strong>
-                  <p>Your ratings, reviews, lists, and taste activity are saved on this device.</p>
-                  <button onClick={() => { onSettingsOpenChange(false); openAuth("signIn"); }}>Sign in to sync</button>
+                  <p>Saved on this device.</p>
+                  <div className="account-actions">
+                    <button onClick={() => { onSettingsOpenChange(false); openAuth("signIn"); }}>Sign in</button>
+                    <button onClick={() => { onSettingsOpenChange(false); openAuth("create"); }}>Create account</button>
+                  </div>
                 </>
               )}
             </section>
@@ -316,7 +345,7 @@ export function AccountHub({
                 <div>
                   <p className="setup-label">Privacy</p>
                   <strong>{profile.isPublic ? "Public account" : "Private account"}</strong>
-                  <p>{profile.isPublic ? "Signed-in people can find your username and send a friend request." : "You are hidden from search and cannot receive new requests. Existing friends keep access."}</p>
+                  <p>{profile.isPublic ? "People can find your username." : "Hidden from search."}</p>
                 </div>
                 <button onClick={togglePrivacy} disabled={busy}>Make {profile.isPublic ? "private" : "public"}</button>
               </section>
@@ -349,18 +378,7 @@ export function AccountHub({
                 <button type="button" className={authMode === "create" ? "active" : ""} onClick={() => switchAuthMode("create")}>Create account</button>
               </div>
             )}
-            <p>
-              {authMode === "create"
-                ? "Create a private account, then choose a public username before your guest activity is merged."
-                : authMode === "reset"
-                  ? "Use this for an existing BetterBoxd email-link account or a forgotten password. It keeps the same account."
-                  : authMode === "setPassword"
-                    ? "Enter a new password for the signed-in BetterBoxd account from your recovery link."
-                    : "Sign in with the email and password for your existing BetterBoxd account."}
-            </p>
-            {authMode !== "create" && authMode !== "setPassword" && (
-              <p className="notice">Previously used email links? Reset your password instead of creating a new account.</p>
-            )}
+            {authSummary && <p className="auth-summary">{authSummary}</p>}
             <form className="auth-stack" onSubmit={submitAuth}>
               {authMode !== "setPassword" && (
                 <label><span>Email</span><input type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="you@example.com" autoComplete="email" /></label>
@@ -385,10 +403,12 @@ export function AccountHub({
             </form>
             {!configured && <p className="notice">Account sync is unavailable until Supabase environment variables are configured.</p>}
             {accountMessage && <p className="account-message" role="status">{accountMessage}</p>}
-            {authMode === "signIn" && <button className="guest-button" onClick={() => switchAuthMode("reset")}>Reset password</button>}
-            {authMode === "create" && <button className="guest-button" onClick={() => switchAuthMode("reset")}>Existing email-link account? Set a password</button>}
-            {authMode === "reset" && <button className="guest-button" onClick={() => switchAuthMode("signIn")}>Back to sign in</button>}
-            <button className="guest-button" onClick={() => setSignInOpen(false)}>Continue as guest</button>
+            <div className="auth-links">
+              {authMode === "signIn" && <button type="button" onClick={() => switchAuthMode("reset")}>Reset password</button>}
+              {authMode === "create" && <button type="button" onClick={() => switchAuthMode("reset")}>Already have an account?</button>}
+              {authMode === "reset" && <button type="button" onClick={() => switchAuthMode("signIn")}>Back to sign in</button>}
+              <button type="button" onClick={() => setSignInOpen(false)}>Continue as guest</button>
+            </div>
           </section>
         </div>
       )}
@@ -397,7 +417,7 @@ export function AccountHub({
         <div className="modal-backdrop required-onboarding" role="presentation">
           <section className="modal auth-modal" role="dialog" aria-modal="true" aria-labelledby="username-title">
             <div className="modal-head"><div><p className="kicker">One last step</p><h2 id="username-title">Choose your username</h2></div></div>
-            <p>Your username is your only public searchable identity. Your email stays private.</p>
+            <p>Your username is public. Your email stays private.</p>
             <form className="auth-stack" onSubmit={provisionProfile}>
               <label><span>Username</span><input value={username} onChange={(event) => setUsername(event.target.value.toLowerCase())} onBlur={checkUsername} placeholder="movie_friend" autoComplete="username" /></label>
               <label><span>Display name <small>optional</small></span><input value={displayName} onChange={(event) => setDisplayName(event.target.value)} placeholder="How friends see you" /></label>

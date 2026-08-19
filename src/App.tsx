@@ -178,6 +178,7 @@ function App() {
   );
   const [session, setSession] = useState<AuthSession | null>(null);
   const [accountProfile, setAccountProfile] = useState<UserProfile | null | undefined>(undefined);
+  const [passwordRecoveryActive, setPasswordRecoveryActive] = useState(false);
   const [accountSettingsOpen, setAccountSettingsOpen] = useState(false);
   const [mergeNotice, setMergeNotice] = useState("");
   const [syncStatus, setSyncStatus] = useState("Saved on this device");
@@ -291,16 +292,18 @@ function App() {
       })
       .catch((error) => setSyncStatus(error.message));
 
-    return subscribeToAuth((nextSession) => {
+    return subscribeToAuth((nextSession, event) => {
       if (nextSession && !sessionRef.current && activeStateRef.current) {
         guestSnapshotRef.current = activeStateRef.current;
       }
       if (nextSession && nextSession.user.id !== sessionRef.current?.user.id) setAccountProfile(undefined);
+      setPasswordRecoveryActive(event === "PASSWORD_RECOVERY");
       sessionRef.current = nextSession;
       setSession(nextSession);
       if (!nextSession) {
         cloudLoadedForUser.current = null;
         setAccountProfile(null);
+        setPasswordRecoveryActive(false);
         setSyncStatus("Saved on this device");
       }
     });
@@ -927,12 +930,14 @@ function App() {
               configured={isSupabaseConfigured}
               session={session}
               profile={accountProfile}
+              passwordRecoveryActive={passwordRecoveryActive}
               syncStatus={syncStatus}
               mergeNotice={mergeNotice}
               developerMode={developerMode}
               settingsOpen={accountSettingsOpen}
               onSettingsOpenChange={setAccountSettingsOpen}
               onProfileChange={handleProfileChange}
+              onPasswordRecoveryHandled={() => setPasswordRecoveryActive(false)}
               onOpenProfile={() => setTab("profile")}
               onSignOut={handleSignOut}
               onToggleDeveloperMode={setDeveloperMode}

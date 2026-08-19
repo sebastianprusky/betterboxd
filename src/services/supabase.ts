@@ -1,4 +1,4 @@
-import { createClient, type Session } from "@supabase/supabase-js";
+import { createClient, type AuthChangeEvent, type Session } from "@supabase/supabase-js";
 import type { CloudUserState, FriendRequest, Friendship, UserProfile } from "../types";
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string | undefined;
@@ -10,6 +10,7 @@ export const supabase = isSupabaseConfigured
   : null;
 
 export type AuthSession = Session;
+export type AuthEvent = AuthChangeEvent;
 
 export async function getCurrentSession() {
   if (!supabase) return null;
@@ -18,9 +19,9 @@ export async function getCurrentSession() {
   return data.session;
 }
 
-export function subscribeToAuth(callback: (session: Session | null) => void) {
+export function subscribeToAuth(callback: (session: Session | null, event: AuthChangeEvent) => void) {
   if (!supabase) return () => undefined;
-  const { data } = supabase.auth.onAuthStateChange((_event, session) => callback(session));
+  const { data } = supabase.auth.onAuthStateChange((event, session) => callback(session, event));
   return () => data.subscription.unsubscribe();
 }
 
