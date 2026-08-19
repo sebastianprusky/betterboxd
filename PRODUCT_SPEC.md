@@ -326,7 +326,7 @@ Current persistence implementation:
 - Local ratings, watchlist, watched state, reviews, Taste Sprint signals, and recommendation feedback
 - Weighted, diversity-reranked local recommendations built from canonical movie profiles
 - Responsive phone and desktop UI
-- Optional passwordless Supabase email account sync through an RLS-protected `user_app_state` row
+- Optional Supabase email/password account sync through an RLS-protected `user_app_state` row
 - Unique username onboarding, public/private discovery, mutual friendship, and blocking
 
 ### Deployment Verification
@@ -357,7 +357,7 @@ Current persistence implementation:
 - Stack: React + Vite
 - Movie API: TMDB
 - Hosting: Vercel, assuming portfolio/personal use remains within the free Hobby plan
-- Auth: passwordless email through Supabase; Google login remains optional future scope
+- Auth: email/password through Supabase; existing email-link users set a password through the normal recovery flow for the same account; Google login remains optional future scope
 - Rating style: half-stars
 - Watchlist behavior: users can mark a watchlist movie as watched by rating it
 - Reviews: private synced review notes now; public/social reviews remain future scope

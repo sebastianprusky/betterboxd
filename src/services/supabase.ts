@@ -24,15 +24,42 @@ export function subscribeToAuth(callback: (session: Session | null) => void) {
   return () => data.subscription.unsubscribe();
 }
 
-export async function sendPasswordlessSignIn(email: string) {
+function getAuthRedirectUrl() {
+  return typeof window === "undefined" ? undefined : window.location.origin;
+}
+
+export async function signInWithPassword(email: string, password: string) {
   if (!supabase) throw new Error("Supabase is not configured.");
-  const redirectOrigin = typeof window === "undefined" ? undefined : window.location.origin;
-  const { error } = await supabase.auth.signInWithOtp({
-    email,
-    options: redirectOrigin
-      ? { emailRedirectTo: redirectOrigin, shouldCreateUser: true, data: { app_name: "BetterBoxd" } }
-      : { shouldCreateUser: true, data: { app_name: "BetterBoxd" } },
+  const { error } = await supabase.auth.signInWithPassword({
+    email: email.trim(),
+    password,
   });
+  if (error) throw error;
+}
+
+export async function signUpWithPassword(email: string, password: string) {
+  if (!supabase) throw new Error("Supabase is not configured.");
+  const { error } = await supabase.auth.signUp({
+    email: email.trim(),
+    password,
+    options: { data: { app_name: "BetterBoxd" } },
+  });
+  if (error) throw error;
+}
+
+export async function sendPasswordReset(email: string) {
+  if (!supabase) throw new Error("Supabase is not configured.");
+  const redirectTo = getAuthRedirectUrl();
+  const { error } = await supabase.auth.resetPasswordForEmail(
+    email.trim(),
+    redirectTo ? { redirectTo } : undefined
+  );
+  if (error) throw error;
+}
+
+export async function updatePassword(password: string) {
+  if (!supabase) throw new Error("Supabase is not configured.");
+  const { error } = await supabase.auth.updateUser({ password });
   if (error) throw error;
 }
 

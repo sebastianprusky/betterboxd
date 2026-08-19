@@ -451,7 +451,10 @@ function App() {
       }),
     [allKnownMovies, ratings, watchlist, interest, preferences, recommendationMode]
   );
-  const recommendations = recommendationResults.map(({ movie }) => movie);
+  const recommendations = useMemo(
+    () => recommendationResults.map(({ movie }) => movie),
+    [recommendationResults]
+  );
   const recommendationByMovieId = useMemo(
     () => new Map(recommendationResults.map((result) => [result.movie.id, result])),
     [recommendationResults]

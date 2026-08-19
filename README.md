@@ -20,7 +20,7 @@ BetterBoxd is a clean movie rating and recommendation web app prototype. It is p
 - Brief recommendation reasons in the Recommended section
 - Local recommendation feedback loop that tracks which recommendations get opened, saved, or highly rated
 - Profile settings for editing optional onboarding inputs: favorite genres, movies, and directors
-- Unobtrusive guest mode with passwordless Supabase email sign-in from the profile menu
+- Unobtrusive guest mode with Supabase email/password sign-in from the profile menu
 - Required unique public username after first authentication; email is never public
 - Idempotent first-sign-in merge of local ratings, lists, reviews, Taste Sprint signals, preferences, and recommendation feedback
 - Public/private profile discovery, mutual friend requests, full friend-only activity sharing, removal, and blocking
@@ -62,7 +62,9 @@ VITE_SUPABASE_URL=your_supabase_project_url_here
 VITE_SUPABASE_ANON_KEY=your_supabase_anon_key_here
 ```
 
-Without Supabase env vars, the app remains fully usable as a local guest. Do not claim account sync or social access is live until the schema, RLS policies, passwordless redirect, and end-to-end flows have been verified against the intended project.
+Without Supabase env vars, the app remains fully usable as a local guest. Do not claim account sync or social access is live until the schema, RLS policies, auth redirect URLs, and end-to-end flows have been verified against the intended project.
+
+Existing users who previously signed in with email links should use **Reset password** from the BetterBoxd sign-in modal. Supabase sends a recovery link for the same verified email account, so the existing profile, username, friend graph, and first-sign-in merge receipt stay attached to the same auth user instead of creating a duplicate account.
 
 Run the app:
 

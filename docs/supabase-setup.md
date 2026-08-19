@@ -17,7 +17,7 @@ VITE_SUPABASE_URL=your_project_url
 VITE_SUPABASE_ANON_KEY=your_anon_public_key
 ```
 
-8. Configure passwordless email redirect URLs, then redeploy the Vercel project.
+8. Configure auth redirect URLs for email confirmation and password recovery, then redeploy the Vercel project.
 
 ## Auth URL Settings
 
@@ -30,15 +30,17 @@ https://i-want-to-make-a-better.vercel.app
 https://betterboxd-sebastian-a6gp1ld08-sebastian-pruskys-projects.vercel.app
 ```
 
-The app also passes the current deployed origin as `emailRedirectTo` when users create an account.
+The app passes the current deployed origin for password recovery redirects. Add each production and preview origin that should accept Supabase auth callbacks.
 
 ## Auth and Public Identity
 
-The app uses passwordless email sign-in. After the first authenticated session, the user must claim a unique lowercase username before profile provisioning and local-data merge. Email remains in Supabase Auth and is never stored in `public.profiles` or returned by social search.
+The app uses Supabase email/password auth. After the first authenticated session, the user must claim a unique lowercase username before profile provisioning and local-data merge. Email remains in Supabase Auth and is never stored in `public.profiles` or returned by social search.
+
+Users who previously authenticated with email links should choose **Reset password** instead of **Create account**. Supabase recovery sets a password on the existing verified email account, preserving the original auth user id, profile, username, friend graph, and merge receipts. BetterBoxd never asks an operator to set or handle a user's password.
 
 Users can always continue as guests. Guest activity remains local and no sign-in prompt interrupts Discover or Search.
 
-If the project is on the Supabase free tier and uses Supabase's default email provider, new projects may not be able to customize the auth email template. The app therefore tells users to look for a Supabase confirmation email for BetterBoxd.
+If the project is on the Supabase free tier and uses Supabase's default email provider, new projects may not be able to customize the auth email template. The app therefore uses generic confirmation and recovery copy and does not depend on a custom template.
 
 On first completed sign-in, local activity is deterministically merged with account state. Collection entries are unioned, editable values use update metadata, recommendation events are deduplicated by ID, and a per-account/device receipt makes retries idempotent.
 
