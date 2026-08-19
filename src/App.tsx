@@ -1,21 +1,24 @@
-import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AccountHub, SocialProfile } from "./components/AccountHub";
 import { fallbackMovies, genreIds } from "./data/fallbackMovies";
 import { getTopTasteLabel, recommendMovies, type RecommendationResult } from "./services/recommendations";
 import {
   getCurrentSession,
+  hasGuestMergeReceipt,
   isSupabaseConfigured,
   loadCloudState,
+  recordGuestMergeReceipt,
   saveCloudState,
-  signIn,
   signOut,
-  signUp,
   subscribeToAuth,
   type AuthSession,
 } from "./services/supabase";
+import { createMergeKey, mergeGuestAndAccountState } from "./services/accountState";
 import {
   askBetterBoxd,
   getMovieDetails,
   getRecommendationCatalog,
+  getTasteSprintMovies,
   getTrendingMovies,
   hasTmdbKey,
   posterUrl,
@@ -39,6 +42,7 @@ import type {
   ReviewMap,
   Tab,
   Theme,
+  UserProfile,
   WatchedMap,
   WatchlistMap,
 } from "./types";
@@ -54,9 +58,11 @@ const interestKey = "betterboxd-interest";
 const preferencesKey = "betterboxd-onboarding-preferences";
 const recommendationModeKey = "betterboxd-recommendation-mode";
 const recommendationEventsKey = "betterboxd-recommendation-events";
-const guestModeKey = "betterboxd-guest-mode";
 const movieCacheKey = "betterboxd-movie-cache";
 const developerModeKey = "betterboxd-developer-mode";
+const stateMetadataKey = "betterboxd-state-metadata";
+const guestMergeKeyKey = "betterboxd-guest-merge-key";
+const sprintRefillThreshold = 6;
 
 const initialRatings: RatingMap = {
   "496243": 4.5,
@@ -171,12 +177,16 @@ function App() {
     readJson(recommendationEventsKey, [])
   );
   const [session, setSession] = useState<AuthSession | null>(null);
-  const [authEmail, setAuthEmail] = useState("");
-  const [authPassword, setAuthPassword] = useState("");
-  const [authMode, setAuthMode] = useState<"signIn" | "signUp">("signIn");
-  const [authPromptOpen, setAuthPromptOpen] = useState(false);
-  const [guestMode, setGuestMode] = useState(() => readJson(guestModeKey, false));
+  const [accountProfile, setAccountProfile] = useState<UserProfile | null | undefined>(undefined);
+  const [accountSettingsOpen, setAccountSettingsOpen] = useState(false);
+  const [mergeNotice, setMergeNotice] = useState("");
   const [syncStatus, setSyncStatus] = useState("Saved on this device");
+  const [fieldUpdatedAt, setFieldUpdatedAt] = useState<Record<string, number>>(() =>
+    readJson<{ fieldUpdatedAt?: Record<string, number> }>(stateMetadataKey, {}).fieldUpdatedAt || {}
+  );
+  const [stateUpdatedAt, setStateUpdatedAt] = useState(() =>
+    readJson<{ stateUpdatedAt?: number }>(stateMetadataKey, {}).stateUpdatedAt || Date.now()
+  );
   const [developerMode, setDeveloperMode] = useState(() => readJson(developerModeKey, false));
   const [profileSort, setProfileSort] = useState<ProfileSort>("recentlyWatched");
   const [movies, setMovies] = useState<Movie[]>(fallbackMovies);
@@ -192,7 +202,11 @@ function App() {
   const [selectedMovie, setSelectedMovie] = useState<Movie | null>(null);
   const [quickQuery, setQuickQuery] = useState("");
   const [quickResults, setQuickResults] = useState<Movie[]>(fallbackMovies.slice(0, 5));
+  const [sprintQueue, setSprintQueue] = useState<Movie[]>([]);
   const [sprintIndex, setSprintIndex] = useState(0);
+  const [sprintLoading, setSprintLoading] = useState(false);
+  const [sprintCatalogExhausted, setSprintCatalogExhausted] = useState(false);
+  const [sprintRefillError, setSprintRefillError] = useState("");
   const [detailMovie, setDetailMovie] = useState<Movie | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [favoriteMovieQuery, setFavoriteMovieQuery] = useState("");
@@ -201,6 +215,15 @@ function App() {
   const loggedImpressionGroups = useRef(new Set<string>());
   const cloudLoadedForUser = useRef<string | null>(null);
   const skipNextCloudSave = useRef(false);
+  const activeStateRef = useRef<CloudUserState | null>(null);
+  const guestSnapshotRef = useRef<CloudUserState | null>(null);
+  const sessionRef = useRef<AuthSession | null>(null);
+  const mergeKeyRef = useRef(readJson<string>(guestMergeKeyKey, "") || createMergeKey());
+  const handleProfileChange = useCallback((profile: UserProfile | null) => setAccountProfile(profile), []);
+  const sprintPageRef = useRef(1);
+  const sprintLoadingRef = useRef(false);
+  const sprintQueueRef = useRef<Movie[]>([]);
+  const decidedSprintIdsRef = useRef(new Set(Object.keys(interest).map(Number)));
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -240,10 +263,6 @@ function App() {
   }, [recommendationEvents]);
 
   useEffect(() => {
-    localStorage.setItem(guestModeKey, JSON.stringify(guestMode));
-  }, [guestMode]);
-
-  useEffect(() => {
     localStorage.setItem(movieCacheKey, JSON.stringify(trimMovieCache(catalogMovies)));
   }, [catalogMovies]);
 
@@ -252,46 +271,40 @@ function App() {
   }, [developerMode]);
 
   useEffect(() => {
+    localStorage.setItem(stateMetadataKey, JSON.stringify({ fieldUpdatedAt, stateUpdatedAt }));
+  }, [fieldUpdatedAt, stateUpdatedAt]);
+
+  useEffect(() => {
+    localStorage.setItem(guestMergeKeyKey, JSON.stringify(mergeKeyRef.current));
+  }, []);
+
+  useEffect(() => {
     if (!isSupabaseConfigured) {
       setSyncStatus("Saved on this device");
       return;
     }
 
     getCurrentSession()
-      .then(setSession)
+      .then((currentSession) => {
+        sessionRef.current = currentSession;
+        setSession(currentSession);
+      })
       .catch((error) => setSyncStatus(error.message));
 
     return subscribeToAuth((nextSession) => {
+      if (nextSession && !sessionRef.current && activeStateRef.current) {
+        guestSnapshotRef.current = activeStateRef.current;
+      }
+      if (nextSession && nextSession.user.id !== sessionRef.current?.user.id) setAccountProfile(undefined);
+      sessionRef.current = nextSession;
       setSession(nextSession);
       if (!nextSession) {
         cloudLoadedForUser.current = null;
-        setSyncStatus("Signed out");
+        setAccountProfile(null);
+        setSyncStatus("Saved on this device");
       }
     });
   }, []);
-
-  useEffect(() => {
-    const userId = session?.user.id;
-    if (!userId || cloudLoadedForUser.current === userId) return;
-
-    setSyncStatus("Loading account data");
-    loadCloudState(userId)
-      .then((cloudState) => {
-        if (cloudState) {
-          skipNextCloudSave.current = true;
-          setRatings(cloudState.ratings || {});
-          setWatchlist(cloudState.watchlist || {});
-          setWatched(cloudState.watched || {});
-          setInterest(cloudState.interest || {});
-          setReviews(cloudState.reviews || {});
-          setPreferences(cloudState.preferences || defaultPreferences);
-          setRecommendationEvents(cloudState.recommendationEvents || []);
-        }
-        cloudLoadedForUser.current = userId;
-        setSyncStatus(cloudState ? "Synced to account" : "Account ready");
-      })
-      .catch((error) => setSyncStatus(error.message));
-  }, [session]);
 
   useEffect(() => {
     getTrendingMovies()
@@ -451,8 +464,11 @@ function App() {
     () => getTopTasteLabel(ratings, allKnownMovies, preferences),
     [ratings, allKnownMovies, preferences]
   );
-  const sprintQueue = recommendations.length ? recommendations : movies.filter((movie) => !ratings[movie.id]);
   const sprintMovie = sprintQueue[sprintIndex % Math.max(sprintQueue.length, 1)];
+  const sprintSeedMovies = useMemo(
+    () => (recommendations.length ? recommendations : movies).filter((movie) => !interest[movie.id] && !ratings[movie.id]),
+    [recommendations, movies, interest, ratings]
+  );
   const interestMovies = useMemo(
     () => Object.values(interest).sort((a, b) => b.updatedAt - a.updatedAt),
     [interest]
@@ -475,6 +491,7 @@ function App() {
   );
   const cloudState = useMemo<CloudUserState>(
     () => ({
+      version: 2,
       ratings,
       watchlist,
       watched,
@@ -482,9 +499,54 @@ function App() {
       reviews,
       preferences,
       recommendationEvents: recommendationEvents.slice(-300),
+      fieldUpdatedAt,
+      stateUpdatedAt,
     }),
-    [ratings, watchlist, watched, interest, reviews, preferences, recommendationEvents]
+    [ratings, watchlist, watched, interest, reviews, preferences, recommendationEvents, fieldUpdatedAt, stateUpdatedAt]
   );
+
+  activeStateRef.current = cloudState;
+  if (!guestSnapshotRef.current) guestSnapshotRef.current = cloudState;
+
+  useEffect(() => {
+    const userId = session?.user.id;
+    if (!userId || !accountProfile || cloudLoadedForUser.current === userId) return;
+    let cancelled = false;
+
+    async function loadAndMergeAccount() {
+      setSyncStatus("Loading account data");
+      try {
+        const accountState = await loadCloudState(userId as string);
+        const mergeKey = mergeKeyRef.current;
+        const alreadyMerged = await hasGuestMergeReceipt(userId as string, mergeKey);
+        const guestState = guestSnapshotRef.current || cloudState;
+        const nextState = alreadyMerged
+          ? accountState || guestState
+          : mergeGuestAndAccountState(accountState, guestState);
+
+        if (!alreadyMerged || !accountState) {
+          await saveCloudState(userId as string, nextState);
+        }
+        if (!alreadyMerged) {
+          await recordGuestMergeReceipt(userId as string, mergeKey);
+        }
+        if (cancelled) return;
+        skipNextCloudSave.current = true;
+        applyCloudState(nextState);
+        cloudLoadedForUser.current = userId as string;
+        setSyncStatus("Synced to account");
+        if (!alreadyMerged) {
+          setMergeNotice("Your activity was merged and synced.");
+          window.setTimeout(() => setMergeNotice(""), 5000);
+        }
+      } catch (error) {
+        if (!cancelled) setSyncStatus(error instanceof Error ? error.message : "Could not load account data");
+      }
+    }
+
+    loadAndMergeAccount();
+    return () => { cancelled = true; };
+  }, [session, accountProfile]);
 
   useEffect(() => {
     const userId = session?.user.id;
@@ -505,6 +567,45 @@ function App() {
     return () => window.clearTimeout(timeout);
   }, [cloudState, session]);
 
+  function applyCloudState(state: CloudUserState) {
+    setRatings(state.ratings || {});
+    setWatchlist(state.watchlist || {});
+    setWatched(state.watched || {});
+    setInterest(state.interest || {});
+    setReviews(state.reviews || {});
+    setPreferences(state.preferences || defaultPreferences);
+    setRecommendationEvents(state.recommendationEvents || []);
+    setFieldUpdatedAt(state.fieldUpdatedAt || {});
+    setStateUpdatedAt(state.stateUpdatedAt || Date.now());
+  }
+
+  function touchFields(...keys: string[]) {
+    const now = Date.now();
+    setFieldUpdatedAt((current) => ({ ...current, ...Object.fromEntries(keys.map((key) => [key, now])) }));
+    setStateUpdatedAt(now);
+  }
+
+  useEffect(() => {
+    decidedSprintIdsRef.current = new Set(Object.keys(interest).map(Number));
+    setSprintQueue((current) => {
+      const seen = new Set<number>();
+      const next = [...current, ...sprintSeedMovies].filter((movie) => {
+        if (seen.has(movie.id) || decidedSprintIdsRef.current.has(movie.id) || ratings[movie.id]) return false;
+        seen.add(movie.id);
+        return true;
+      });
+      sprintQueueRef.current = next;
+      return next;
+    });
+  }, [interest, ratings, sprintSeedMovies]);
+
+  useEffect(() => {
+    setSprintIndex((index) => (sprintQueue.length ? index % sprintQueue.length : 0));
+    if (sprintQueue.length <= sprintRefillThreshold && !sprintCatalogExhausted && !sprintRefillError) {
+      void refillTasteSprint();
+    }
+  }, [sprintQueue.length, sprintCatalogExhausted, sprintRefillError]);
+
   useEffect(() => {
     const signature = `${recommendationMode}:${recommendationResults.map(({ movie }) => movie.id).join(",")}`;
     if (!recommendationResults.length || loggedImpressionGroups.current.has(signature)) return;
@@ -521,14 +622,14 @@ function App() {
   }, [recommendationMode, recommendationResults]);
 
   function rateMovie(movie: Movie, rating: number) {
-    if (!requireAccountAction()) return;
     logRecommendationOutcome(movie, rating >= 4 ? "highRating" : "rating");
+    touchFields(`rating:${movie.id}`, `watched:${movie.id}`, `watchlist:${movie.id}`);
     setRatings((current) => ({ ...current, [movie.id]: rating }));
     markWatchedState(movie);
   }
 
   function markWatched(movie: Movie) {
-    if (!requireAccountAction()) return;
+    touchFields(`watched:${movie.id}`, `watchlist:${movie.id}`);
     markWatchedState(movie);
   }
 
@@ -545,7 +646,7 @@ function App() {
   }
 
   function removeRating(movie: Movie) {
-    if (!requireAccountAction()) return;
+    touchFields(`rating:${movie.id}`, `review:${movie.id}`);
     setRatings((current) => {
       const next = { ...current };
       delete next[movie.id];
@@ -559,7 +660,7 @@ function App() {
   }
 
   function removeWatched(movie: Movie) {
-    if (!requireAccountAction()) return;
+    touchFields(`watched:${movie.id}`);
     removeRating(movie);
     setWatched((current) => {
       const next = { ...current };
@@ -569,7 +670,7 @@ function App() {
   }
 
   function toggleWatchlist(movie: Movie) {
-    if (!requireAccountAction()) return;
+    touchFields(`watchlist:${movie.id}`);
     if (!watchlist[movie.id]) logRecommendationOutcome(movie, "watchlist");
     setWatchlist((current) => {
       const next = { ...current };
@@ -580,16 +681,22 @@ function App() {
   }
 
   function setMovieInterest(movie: Movie, value: InterestValue) {
-    if (!requireAccountAction()) return;
+    decidedSprintIdsRef.current.add(movie.id);
+    touchFields(`interest:${movie.id}`);
     setInterest((current) => ({
       ...current,
       [movie.id]: { movie, value, updatedAt: Date.now() },
     }));
-    nextSprint();
+    setSprintQueue((current) => {
+      const next = current.filter((candidate) => candidate.id !== movie.id);
+      sprintQueueRef.current = next;
+      setSprintIndex((index) => (next.length ? index % next.length : 0));
+      return next;
+    });
   }
 
   function removeFromWatchlist(movie: Movie) {
-    if (!requireAccountAction()) return;
+    touchFields(`watchlist:${movie.id}`);
     setWatchlist((current) => {
       const next = { ...current };
       delete next[movie.id];
@@ -598,7 +705,7 @@ function App() {
   }
 
   function togglePreferenceGenre(genre: string) {
-    if (!requireAccountAction()) return;
+    touchFields("preferences");
     setPreferences((current) => ({
       ...current,
       genres: current.genres.includes(genre)
@@ -608,7 +715,7 @@ function App() {
   }
 
   function addFavoriteMovie(movie: Movie) {
-    if (!requireAccountAction()) return;
+    touchFields("preferences");
     setPreferences((current) => ({
       ...current,
       favoriteMovies: { ...current.favoriteMovies, [movie.id]: movie },
@@ -617,7 +724,7 @@ function App() {
   }
 
   function removeFavoriteMovie(movie: Movie) {
-    if (!requireAccountAction()) return;
+    touchFields("preferences");
     setPreferences((current) => {
       const next = { ...current.favoriteMovies };
       delete next[movie.id];
@@ -626,9 +733,9 @@ function App() {
   }
 
   function addDirector() {
-    if (!requireAccountAction()) return;
     const director = directorInput.trim();
     if (!director) return;
+    touchFields("preferences");
     setPreferences((current) => ({
       ...current,
       directors: current.directors.some((currentDirector) => currentDirector.toLowerCase() === director.toLowerCase())
@@ -639,7 +746,7 @@ function App() {
   }
 
   function removeDirector(director: string) {
-    if (!requireAccountAction()) return;
+    touchFields("preferences");
     setPreferences((current) => ({
       ...current,
       directors: current.directors.filter((currentDirector) => currentDirector !== director),
@@ -647,7 +754,7 @@ function App() {
   }
 
   function updateReview(movie: Movie, review: string) {
-    if (!requireAccountAction()) return;
+    touchFields(`review:${movie.id}`);
     setReviews((current) => {
       const next = { ...current };
       if (review.trim()) next[movie.id] = review;
@@ -677,6 +784,73 @@ function App() {
     setSprintIndex((index) => (index <= 0 ? Math.max(sprintQueue.length - 1, 0) : index - 1));
   }
 
+  function rankSprintCandidates(candidates: Movie[]) {
+    const candidateIds = new Set(candidates.map((movie) => movie.id));
+    const ranked = recommendMovies({
+      movies: mergeMovieLists(allKnownMovies, candidates),
+      ratings,
+      watchlist,
+      interest,
+      preferences,
+      mode: recommendationMode,
+    })
+      .map((result) => result.movie)
+      .filter((movie) => candidateIds.has(movie.id));
+
+    return mergeMovieLists(ranked, candidates);
+  }
+
+  async function refillTasteSprint() {
+    if (sprintLoadingRef.current || sprintCatalogExhausted) return;
+    if (!hasTmdbKey()) {
+      setSprintCatalogExhausted(true);
+      return;
+    }
+
+    sprintLoadingRef.current = true;
+    setSprintLoading(true);
+
+    try {
+      let addedFreshMovies = false;
+      let hasMore = true;
+      let attempts = 0;
+
+      while (!addedFreshMovies && hasMore && attempts < 5) {
+        const page = sprintPageRef.current;
+        const result = await getTasteSprintMovies(page);
+        sprintPageRef.current = page + 1;
+        hasMore = result.hasMore;
+        attempts += 1;
+        rememberMovies(result.movies);
+
+        const activeIds = new Set(sprintQueueRef.current.map((movie) => movie.id));
+        const additions = rankSprintCandidates(result.movies).filter(
+          (movie) => !activeIds.has(movie.id) && !decidedSprintIdsRef.current.has(movie.id) && !ratings[movie.id]
+        );
+
+        if (additions.length) {
+          const next = [...sprintQueueRef.current, ...additions];
+          sprintQueueRef.current = next;
+          setSprintQueue(next);
+          addedFreshMovies = true;
+        }
+      }
+
+      setSprintCatalogExhausted(!hasMore);
+      setSprintRefillError(!addedFreshMovies && hasMore ? "Fresh titles were not available in this batch." : "");
+    } catch {
+      setSprintRefillError("Could not load more movies.");
+    } finally {
+      sprintLoadingRef.current = false;
+      setSprintLoading(false);
+    }
+  }
+
+  function retryTasteSprintRefill() {
+    setSprintRefillError("");
+    void refillTasteSprint();
+  }
+
   function rememberMovies(nextMovies: Movie[]) {
     if (!nextMovies.length) return;
     setCatalogMovies((current) => trimMovieCache(mergeMovieLists(current, nextMovies)));
@@ -695,51 +869,18 @@ function App() {
     );
   }
 
-  function requireAccountAction() {
-    if (!isSupabaseConfigured || session || guestMode) return true;
-    setAuthPromptOpen(true);
-    setSyncStatus("Sign in to sync across devices, or continue as guest");
-    return false;
-  }
-
-  function continueAsGuest() {
-    setGuestMode(true);
-    setAuthPromptOpen(false);
-    setSyncStatus("Saving locally as guest");
-  }
-
-  async function submitAuth(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!authEmail.trim() || !authPassword) return;
-
-    setSyncStatus(authMode === "signIn" ? "Signing in" : "Creating account");
-    try {
-      const nextSession =
-        authMode === "signIn"
-          ? await signIn(authEmail.trim(), authPassword)
-          : await signUp(authEmail.trim(), authPassword);
-      setSession(nextSession);
-      if (nextSession) setGuestMode(false);
-      setAuthPassword("");
-      if (nextSession) setAuthPromptOpen(false);
-      setSyncStatus(
-        nextSession
-          ? "Account ready"
-          : "Check your email for a Supabase confirmation message for BetterBoxd"
-      );
-    } catch (error) {
-      setSyncStatus(error instanceof Error ? error.message : "Authentication failed");
-    }
-  }
-
   async function handleSignOut() {
     setSyncStatus("Signing out");
     try {
       await signOut();
+      sessionRef.current = null;
       setSession(null);
-      setGuestMode(false);
-      setAuthPromptOpen(false);
-      setSyncStatus("Signed out");
+      setAccountProfile(null);
+      cloudLoadedForUser.current = null;
+      guestSnapshotRef.current = activeStateRef.current;
+      mergeKeyRef.current = createMergeKey();
+      localStorage.setItem(guestMergeKeyKey, JSON.stringify(mergeKeyRef.current));
+      setSyncStatus("Saved on this device");
     } catch (error) {
       setSyncStatus(error instanceof Error ? error.message : "Could not sign out");
     }
@@ -773,12 +914,26 @@ function App() {
           <nav className="top-nav" aria-label="Primary navigation">
             {navButton("discover", "Discover")}
             {navButton("search", "Search")}
-            {navButton("profile", "Profile")}
+            {navButton("profile", "Friends")}
           </nav>
           <div className="topbar-actions">
             <button className="theme-toggle" onClick={() => setTheme(theme === "light" ? "dark" : "light")}>
               {theme === "light" ? "Dark" : "Light"}
             </button>
+            <AccountHub
+              configured={isSupabaseConfigured}
+              session={session}
+              profile={accountProfile}
+              syncStatus={syncStatus}
+              mergeNotice={mergeNotice}
+              developerMode={developerMode}
+              settingsOpen={accountSettingsOpen}
+              onSettingsOpenChange={setAccountSettingsOpen}
+              onProfileChange={handleProfileChange}
+              onOpenProfile={() => setTab("profile")}
+              onSignOut={handleSignOut}
+              onToggleDeveloperMode={setDeveloperMode}
+            />
           </div>
         </header>
 
@@ -792,33 +947,36 @@ function App() {
                     <h2>Rate movies fast.</h2>
                   </div>
                 </div>
-                {sprintMovie && (
-                  <div className="sprint-layout">
+                {sprintMovie ? (
+                  <div className="sprint-layout" data-testid="taste-sprint-active">
                     <div className="poster-stage">
-                      <button className="poster-arrow left" onClick={previousSprint} aria-label="Previous movie">
+                      <button className="poster-arrow left" onClick={previousSprint} aria-label="Previous movie" disabled={sprintQueue.length <= 1}>
                         <span aria-hidden="true">&lt;</span>
                       </button>
                       <Poster movie={sprintMovie} large overlayTitle onOpen={openMovie} />
-                      <button className="poster-arrow right" onClick={nextSprint} aria-label="Next movie">
+                      <button className="poster-arrow right" onClick={nextSprint} aria-label="Next movie" disabled={sprintQueue.length <= 1}>
                         <span aria-hidden="true">&gt;</span>
                       </button>
                     </div>
                     <div className="sprint-copy">
-                      <p>{sprintMovie.year} · {sprintMovie.genres.slice(0, 2).join(", ") || "Movie"}</p>
+                      <p data-testid="taste-sprint-metadata">{sprintMovie.year} · {sprintMovie.genres.slice(0, 2).join(", ") || "Movie"}</p>
                       <div className="interest-actions" aria-label="Taste Sprint response">
                         <button
+                          data-testid="taste-not-interested"
                           className={interest[sprintMovie.id]?.value === "notInterested" ? "is-active" : ""}
                           onClick={() => setMovieInterest(sprintMovie, "notInterested")}
                         >
                           Not interested
                         </button>
                         <button
+                          data-testid="taste-maybe"
                           className={interest[sprintMovie.id]?.value === "maybe" ? "is-active" : ""}
                           onClick={() => setMovieInterest(sprintMovie, "maybe")}
                         >
                           Maybe
                         </button>
                         <button
+                          data-testid="taste-interested"
                           className={interest[sprintMovie.id]?.value === "interested" ? "is-active" : ""}
                           onClick={() => setMovieInterest(sprintMovie, "interested")}
                         >
@@ -830,7 +988,27 @@ function App() {
                           {watchlist[sprintMovie.id] ? "Saved" : "+ Watchlist"}
                         </button>
                       </div>
+                      {sprintLoading && <p className="sprint-refill-status" aria-live="polite">Finding more movies…</p>}
+                      {sprintRefillError && (
+                        <div className="sprint-refill-status" role="status">
+                          <span>{sprintRefillError}</span>
+                          <button onClick={retryTasteSprintRefill}>Try again</button>
+                        </div>
+                      )}
                     </div>
+                  </div>
+                ) : (
+                  <div className="sprint-empty" data-testid="taste-sprint-empty" role="status">
+                    {sprintLoading ? (
+                      <p>Finding another movie…</p>
+                    ) : sprintRefillError ? (
+                      <>
+                        <p>{sprintRefillError}</p>
+                        <button onClick={retryTasteSprintRefill}>Try again</button>
+                      </>
+                    ) : (
+                      <p>You’re all caught up. More movies will appear when the catalog has fresh titles.</p>
+                    )}
                   </div>
                 )}
               </section>
@@ -902,6 +1080,11 @@ function App() {
 
         {tab === "profile" && (
           <section className="screen">
+            <SocialProfile
+              session={session}
+              profile={accountProfile || null}
+              onOpenSettings={() => setAccountSettingsOpen(true)}
+            />
             <section className="movie-section profile-list">
               <div className="section-title profile-title">
                 <div>
@@ -940,28 +1123,10 @@ function App() {
             <section className="movie-section profile-list taste-setup">
               <div className="section-title profile-title">
                 <div>
-                  <p className="kicker">Settings</p>
+                  <p className="kicker">Taste profile</p>
                   <h2>Taste preferences</h2>
                 </div>
               </div>
-
-              <AccountSettings
-                configured={isSupabaseConfigured}
-                email={authEmail}
-                password={authPassword}
-                mode={authMode}
-                sessionEmail={session?.user.email || ""}
-                syncStatus={syncStatus}
-                guestMode={guestMode}
-                developerMode={developerMode}
-                onEmail={setAuthEmail}
-                onPassword={setAuthPassword}
-                onMode={setAuthMode}
-                onSubmit={submitAuth}
-                onSignOut={handleSignOut}
-                onGuest={continueAsGuest}
-                onToggleDeveloperMode={setDeveloperMode}
-              />
 
               <div className="setup-grid">
                 <section>
@@ -1078,10 +1243,10 @@ function App() {
       <nav className="bottom-nav">
         {navButton("discover", "Discover")}
         {navButton("search", "Search")}
-        {navButton("profile", "Profile")}
+        {navButton("profile", "Friends")}
       </nav>
 
-      <button className="floating-add" onClick={() => (requireAccountAction() ? setQuickAddOpen(true) : undefined)}>
+      <button className="floating-add" onClick={() => setQuickAddOpen(true)}>
         <span className="plus-icon" aria-hidden="true" />
         <span className="sr-only">Quick add watched movie</span>
       </button>
@@ -1135,37 +1300,6 @@ function App() {
                 />
               </div>
             )}
-          </section>
-        </div>
-      )}
-
-      {authPromptOpen && !session && (
-        <div className="modal-backdrop" role="presentation" onMouseDown={() => setAuthPromptOpen(false)}>
-          <section className="modal auth-modal" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>
-            <div className="modal-head">
-              <div>
-                <p className="kicker">Account required</p>
-                <h2>Sign in to save movies.</h2>
-              </div>
-              <button onClick={() => setAuthPromptOpen(false)}>Close</button>
-            </div>
-            <AccountSettings
-              configured={isSupabaseConfigured}
-              email={authEmail}
-              password={authPassword}
-              mode={authMode}
-              sessionEmail=""
-              syncStatus={syncStatus}
-              guestMode={guestMode}
-              developerMode={developerMode}
-              onEmail={setAuthEmail}
-              onPassword={setAuthPassword}
-              onMode={setAuthMode}
-              onSubmit={submitAuth}
-              onSignOut={handleSignOut}
-              onGuest={continueAsGuest}
-              onToggleDeveloperMode={setDeveloperMode}
-            />
           </section>
         </div>
       )}
@@ -1354,96 +1488,6 @@ function RecommendationFeedbackPanel({
         <strong>{feedback.bestMode ? titleCase(feedback.bestMode) : "Learning"}</strong>
       </div>
     </div>
-  );
-}
-
-function AccountSettings({
-  configured,
-  email,
-  password,
-  mode,
-  sessionEmail,
-  syncStatus,
-  guestMode,
-  developerMode,
-  onEmail,
-  onPassword,
-  onMode,
-  onSubmit,
-  onSignOut,
-  onGuest,
-  onToggleDeveloperMode,
-}: {
-  configured: boolean;
-  email: string;
-  password: string;
-  mode: "signIn" | "signUp";
-  sessionEmail: string;
-  syncStatus: string;
-  guestMode: boolean;
-  developerMode: boolean;
-  onEmail: (email: string) => void;
-  onPassword: (password: string) => void;
-  onMode: (mode: "signIn" | "signUp") => void;
-  onSubmit: (event: FormEvent<HTMLFormElement>) => void;
-  onSignOut: () => void;
-  onGuest: () => void;
-  onToggleDeveloperMode: (enabled: boolean) => void;
-}) {
-  return (
-    <section className="account-settings">
-      <div>
-        <p className="setup-label">Account sync</p>
-        <strong>{sessionEmail || (guestMode ? "Guest profile" : "Local profile")}</strong>
-        <span>{configured ? syncStatus : "Add Supabase env vars to enable account sync"}</span>
-      </div>
-
-      {configured && sessionEmail ? (
-        <button onClick={onSignOut}>Sign out</button>
-      ) : configured ? (
-        <div className="auth-stack">
-          <form onSubmit={onSubmit}>
-            <input
-              value={email}
-              onChange={(event) => onEmail(event.target.value)}
-              placeholder="Email"
-              type="email"
-              autoComplete="email"
-            />
-            <input
-              value={password}
-              onChange={(event) => onPassword(event.target.value)}
-              placeholder="Password"
-              type="password"
-              autoComplete={mode === "signIn" ? "current-password" : "new-password"}
-            />
-            <div className="auth-actions">
-              <button type="submit">{mode === "signIn" ? "Sign in" : "Create account"}</button>
-              <button type="button" onClick={() => onMode(mode === "signIn" ? "signUp" : "signIn")}>
-                {mode === "signIn" ? "New account" : "Use existing"}
-              </button>
-            </div>
-          </form>
-          {!guestMode && (
-            <button className="guest-button" onClick={onGuest}>
-              Continue as guest
-            </button>
-          )}
-        </div>
-      ) : null}
-
-      <label className="developer-toggle">
-        <span>
-          <strong>Developer mode</strong>
-          <small>Show recommender and semantic-search diagnostics on movie cards.</small>
-        </span>
-        <input
-          type="checkbox"
-          checked={developerMode}
-          onChange={(event) => onToggleDeveloperMode(event.target.checked)}
-        />
-      </label>
-    </section>
   );
 }
 

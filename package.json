@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "vite --host 0.0.0.0",
     "build": "tsc --noEmit && vite build",
-    "preview": "vite preview --host 0.0.0.0"
+    "preview": "vite preview --host 0.0.0.0",
+    "test": "npm run test:merge",
+    "test:merge": "node --experimental-strip-types scripts/verify-account-merge.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.110.8",

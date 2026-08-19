@@ -7,16 +7,17 @@ This app works without Supabase, but account sync turns local browser data into 
 1. Create a free Supabase project.
 2. Open the Supabase SQL editor.
 3. Paste and run `supabase/schema.sql`.
-4. Go to Project Settings > API.
-5. Copy the Project URL and anon public key.
-6. Add these environment variables in Vercel:
+4. Paste and run `supabase/migrations/202608190001_account_social.sql`.
+5. Go to Project Settings > API.
+6. Copy the Project URL and anon public key.
+7. Add these environment variables in Vercel:
 
 ```text
 VITE_SUPABASE_URL=your_project_url
 VITE_SUPABASE_ANON_KEY=your_anon_public_key
 ```
 
-7. Redeploy the Vercel project.
+8. Configure passwordless email redirect URLs, then redeploy the Vercel project.
 
 ## Auth URL Settings
 
@@ -31,15 +32,15 @@ https://betterboxd-sebastian-a6gp1ld08-sebastian-pruskys-projects.vercel.app
 
 The app also passes the current deployed origin as `emailRedirectTo` when users create an account.
 
-## Auth
+## Auth and Public Identity
 
-The app currently supports email/password sign up and sign in.
+The app uses passwordless email sign-in. After the first authenticated session, the user must claim a unique lowercase username before profile provisioning and local-data merge. Email remains in Supabase Auth and is never stored in `public.profiles` or returned by social search.
 
-Supabase may require email confirmation depending on the project's Auth settings. If confirmation is enabled, users may need to check their email before the first login fully works.
+Users can always continue as guests. Guest activity remains local and no sign-in prompt interrupts Discover or Search.
 
 If the project is on the Supabase free tier and uses Supabase's default email provider, new projects may not be able to customize the auth email template. The app therefore tells users to look for a Supabase confirmation email for BetterBoxd.
 
-When Supabase env vars are configured, users must sign in or explicitly continue as guest before rating, saving, reviewing, using Taste Sprint, or editing taste preferences. Guest saves stay in local browser storage and do not sync across devices. Browsing and search stay public.
+On first completed sign-in, local activity is deterministically merged with account state. Collection entries are unioned, editable values use update metadata, recommendation events are deduplicated by ID, and a per-account/device receipt makes retries idempotent.
 
 ## Data Model
 
@@ -56,6 +57,8 @@ That row stores:
 - recommendation feedback events
 
 Row-level security ensures each user can only read and write their own row.
+
+The social migration adds a friend-read policy: accepted, unblocked friends can read the full row. Public strangers can only read basic identity fields from `profiles`; they cannot read app state. Private profiles are excluded from username search and new requests. Blocking removes friendship and pending requests and immediately revokes profile/app-state access in both directions.
 
 ## Later Upgrade
 

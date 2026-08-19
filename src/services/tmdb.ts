@@ -250,6 +250,20 @@ export async function getRecommendationCatalog(): Promise<Movie[]> {
   return enrichMovies([...movies.values()].slice(0, 45), 14);
 }
 
+export async function getTasteSprintMovies(page: number): Promise<{ movies: Movie[]; hasMore: boolean }> {
+  if (!apiKey) return { movies: [], hasMore: false };
+
+  const safePage = Math.min(Math.max(Math.floor(page), 1), 500);
+  const data = await tmdbFetch(
+    `/discover/movie?sort_by=popularity.desc&include_adult=false&include_video=false&vote_count.gte=50&page=${safePage}`
+  );
+  const movies = dedupeMovies((data?.results || []).map(mapMovie))
+    .filter((movie) => movie.posterPath);
+  const lastPage = Math.min(Number(data?.total_pages) || safePage, 500);
+
+  return { movies, hasMore: safePage < lastPage };
+}
+
 export async function searchMovies(query: string): Promise<Movie[]> {
   return (await searchMoviesWithDebug(query)).movies;
 }

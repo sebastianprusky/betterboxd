@@ -79,6 +79,7 @@ export type RecommendationEvent = {
 };
 
 export type CloudUserState = {
+  version?: 2;
   ratings: RatingMap;
   watchlist: WatchlistMap;
   watched: WatchedMap;
@@ -86,4 +87,35 @@ export type CloudUserState = {
   reviews: ReviewMap;
   preferences: OnboardingPreferences;
   recommendationEvents: RecommendationEvent[];
+  fieldUpdatedAt?: Record<string, number>;
+  stateUpdatedAt?: number;
+};
+
+export type UserProfile = {
+  userId: string;
+  username: string;
+  displayName?: string;
+  avatarUrl?: string;
+  isPublic: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type FriendRequestStatus = "pending" | "accepted" | "declined" | "cancelled";
+
+export type FriendRequest = {
+  id: string;
+  requesterId: string;
+  recipientId: string;
+  status: FriendRequestStatus;
+  createdAt: string;
+  updatedAt: string;
+  otherProfile?: UserProfile;
+  direction: "incoming" | "outgoing";
+};
+
+export type Friendship = {
+  friendUserId: string;
+  createdAt: string;
+  profile: UserProfile;
 };

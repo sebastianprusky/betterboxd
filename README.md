@@ -20,8 +20,10 @@ BetterBoxd is a clean movie rating and recommendation web app prototype. It is p
 - Brief recommendation reasons in the Recommended section
 - Local recommendation feedback loop that tracks which recommendations get opened, saved, or highly rated
 - Profile settings for editing optional onboarding inputs: favorite genres, movies, and directors
-- Supabase account sync for ratings, watchlist, preferences, reviews, and recommendation feedback
-- Sign-in or guest choice before saving movies, ratings, reviews, Taste Sprint signals, and taste preferences
+- Unobtrusive guest mode with passwordless Supabase email sign-in from the profile menu
+- Required unique public username after first authentication; email is never public
+- Idempotent first-sign-in merge of local ratings, lists, reviews, Taste Sprint signals, preferences, and recommendation feedback
+- Public/private profile discovery, mutual friend requests, full friend-only activity sharing, removal, and blocking
 - Profile page with taste stats, watchlist, and recent ratings
 - Hidden Developer mode in Profile Settings for semantic-search and recommender diagnostics
 - Persistent `+ Watched` quick-add flow
@@ -53,14 +55,14 @@ OPENAI_API_KEY=your_server_side_openai_api_key_here
 
 The semantic search route is public, so it applies request-size, field-length, candidate-count, warm-instance cache, and basic per-IP rate-limit controls before calling OpenAI. Vercel serverless instances do not share memory globally, so configure provider spend limits before enabling billing.
 
-To enable account sync, create a free Supabase project, run [supabase/schema.sql](./supabase/schema.sql) in the Supabase SQL editor, then add:
+To enable account sync, create a free Supabase project, run [supabase/schema.sql](./supabase/schema.sql), then apply [the account/social migration](./supabase/migrations/202608190001_account_social.sql) in the Supabase SQL editor. Add:
 
 ```bash
 VITE_SUPABASE_URL=your_supabase_project_url_here
 VITE_SUPABASE_ANON_KEY=your_supabase_anon_key_here
 ```
 
-Without Supabase env vars, the app still works with local browser storage.
+Without Supabase env vars, the app remains fully usable as a local guest. Do not claim account sync or social access is live until the schema, RLS policies, passwordless redirect, and end-to-end flows have been verified against the intended project.
 
 Run the app:
 
@@ -72,7 +74,7 @@ Then open the local URL printed by Vite.
 
 ## Deployment
 
-Vercel is the recommended first host for portfolio and phone testing. Add `VITE_TMDB_API_KEY` and the server-only `OPENAI_API_KEY` before deploying. Add the two `VITE_SUPABASE_*` variables only after applying and verifying `supabase/schema.sql` against the intended project.
+Vercel is the recommended first host for portfolio and phone testing. Add `VITE_TMDB_API_KEY` and the server-only `OPENAI_API_KEY` before deploying. Add the two `VITE_SUPABASE_*` variables only after applying and verifying both Supabase SQL files against the intended project.
 
 ## Product Direction
 
