@@ -1,5 +1,7 @@
 import { fallbackMovies } from "../data/fallbackMovies";
 import type { Movie, MovieDebugInfo, MovieDebugMap } from "../types";
+import { cosineSimilarity, embedText } from "./localEmbeddings";
+import { buildMovieProfile } from "./movieProfiles";
 
 const semanticSearchUrl = "/api/semantic-search";
 const maxResults = 20;
@@ -35,7 +37,7 @@ function queryTokens(query: string) {
 }
 
 function movieText(movie: Movie) {
-  return normalize([movie.title, movie.year, movie.overview, ...movie.genres, movie.director || "", ...(movie.cast || [])].join(" "));
+  return normalize(buildMovieProfile(movie));
 }
 
 function isMovie(value: unknown): value is Movie {
@@ -68,11 +70,13 @@ export function localSemanticSearchWithDebug(query: string, candidates: Movie[] 
   if (!normalizedQuery) return { movies: [], debug: {} };
 
   const tokens = queryTokens(query);
+  const queryEmbedding = embedText(query);
   const ranked = dedupeMovies(candidates)
     .map((movie, index) => {
       const title = normalize(movie.title);
       const genres = movie.genres.map(normalize);
       const text = movieText(movie);
+      const semanticSimilarity = cosineSimilarity(queryEmbedding, embedText(buildMovieProfile(movie)));
       let score = 0;
       const strongestSignals: string[] = [];
 
@@ -112,6 +116,9 @@ export function localSemanticSearchWithDebug(query: string, candidates: Movie[] 
         }
       });
 
+      score += Math.max(semanticSimilarity, 0) * 8;
+      if (semanticSimilarity >= 0.25) strongestSignals.push("profile similarity");
+
       return { movie, score, index, strongestSignals: [...new Set(strongestSignals)].slice(0, 3) };
     })
     .filter(({ score }) => score > 0)
@@ -128,7 +135,7 @@ export function localSemanticSearchWithDebug(query: string, candidates: Movie[] 
           mode: "local-text",
           score,
           strongestSignals: strongestSignals.length ? strongestSignals : ["metadata text"],
-          reasonSource: "Local title, genre, overview, director, and cast text matching",
+          reasonSource: "Canonical movie-profile similarity plus local title and metadata matching",
         } satisfies MovieDebugInfo,
       ])
     ),

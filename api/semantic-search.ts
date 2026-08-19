@@ -12,6 +12,11 @@ type Movie = {
   runtime?: number;
   director?: string;
   cast?: string[];
+  keywords?: string[];
+  originalLanguage?: string;
+  productionCountries?: string[];
+  similarMovieIds?: number[];
+  recommendedMovieIds?: number[];
 };
 
 type NodeRequest = {
@@ -70,6 +75,11 @@ const maxGenreLength = 40;
 const maxDirectorLength = 80;
 const maxCastMembers = 5;
 const maxCastNameLength = 80;
+const maxKeywords = 12;
+const maxKeywordLength = 60;
+const maxCountries = 3;
+const maxCountryLength = 60;
+const maxRelationshipIds = 12;
 const rateLimitWindowMs = 60_000;
 const maxRequestsPerWindow = 30;
 const embeddingCacheTtlMs = 24 * 60 * 60 * 1000;
@@ -161,6 +171,27 @@ function sanitizeMovie(value: unknown): Movie | null {
           .map((name) => limitText(name, maxCastNameLength))
           .filter(Boolean)
       : undefined,
+    keywords: Array.isArray(value.keywords)
+      ? value.keywords
+          .filter((keyword): keyword is string => typeof keyword === "string")
+          .slice(0, maxKeywords)
+          .map((keyword) => limitText(keyword, maxKeywordLength))
+          .filter(Boolean)
+      : undefined,
+    originalLanguage: limitText(value.originalLanguage, 12) || undefined,
+    productionCountries: Array.isArray(value.productionCountries)
+      ? value.productionCountries
+          .filter((country): country is string => typeof country === "string")
+          .slice(0, maxCountries)
+          .map((country) => limitText(country, maxCountryLength))
+          .filter(Boolean)
+      : undefined,
+    similarMovieIds: Array.isArray(value.similarMovieIds)
+      ? value.similarMovieIds.filter((id): id is number => typeof id === "number").slice(0, maxRelationshipIds)
+      : undefined,
+    recommendedMovieIds: Array.isArray(value.recommendedMovieIds)
+      ? value.recommendedMovieIds.filter((id): id is number => typeof id === "number").slice(0, maxRelationshipIds)
+      : undefined,
   };
 }
 
@@ -178,12 +209,18 @@ function normalizeCandidates(value: unknown): Movie[] {
 
 function movieEmbeddingText(movie: Movie) {
   return [
-    movie.title,
-    movie.year,
-    movie.genres.join(", "),
-    movie.director ? `Directed by ${movie.director}` : "",
+    `Title: ${movie.title}`,
+    `Year: ${movie.year}`,
+    movie.genres.length ? `Genres: ${movie.genres.join(", ")}` : "",
+    movie.overview ? `Overview: ${movie.overview}` : "",
+    movie.director ? `Director: ${movie.director}` : "",
     movie.cast?.length ? `Cast: ${movie.cast.join(", ")}` : "",
-    movie.overview,
+    movie.keywords?.length ? `Keywords: ${movie.keywords.join(", ")}` : "",
+    movie.originalLanguage ? `Language: ${movie.originalLanguage}` : "",
+    movie.productionCountries?.length ? `Countries: ${movie.productionCountries.join(", ")}` : "",
+    /^\d{4}$/.test(movie.year) ? `Decade: ${movie.year.slice(0, 3)}0s` : "",
+    movie.similarMovieIds?.length ? `TMDB similar movie IDs: ${movie.similarMovieIds.join(", ")}` : "",
+    movie.recommendedMovieIds?.length ? `TMDB recommended movie IDs: ${movie.recommendedMovieIds.join(", ")}` : "",
   ]
     .filter(Boolean)
     .join("\n");

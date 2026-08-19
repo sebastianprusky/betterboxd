@@ -132,19 +132,34 @@ Important implementation note:
 
 V1 recommendations should be based on ratings.
 
-Initial algorithm:
+Implemented portfolio algorithm:
 
-- Collect movies the user rated highly, especially 4 stars and above
-- Weight genres, directors, release eras, and keywords from those movies
-- Recommend unrated movies with overlapping attributes
-- Penalize movies similar to low-rated movies
-- Explain recommendations in plain language, such as “Recommended because you rated sci-fi dramas highly”
+- Collect ratings as the strongest signal, including negative weight for low ratings
+- Use watchlist adds as weaker positive signals
+- Use Taste Sprint responses as lightweight interest signals
+- Let Profile settings seed favorite genres, favorite movies, and directors, with every field optional
+- Build deterministic local text vectors from title, overview, genres, keywords, director, cast, country/language, and release decade
+- Use a shared canonical movie profile builder as the source text for recommendation vectors, fallback search, and server-side embeddings
+- Use a shared local embedding adapter for the recommender and no-key/server-unavailable semantic fallback
+- Enrich TMDB-backed movie profiles with keywords, credits, country/language, and similar/recommended relationships
+- Recommend unrated and unwatched candidates with mode-specific ranking weights
+- Maintain a bounded local movie catalog cache so recommendations have a larger candidate pool
+- Apply diversity reranking to avoid overly similar recommendation lists
+- Show short deterministic reasons for recommended movies
+- Log recommendation impressions and outcomes locally
+- Show only a compact user-facing feedback summary in Profile
 
 Portfolio demo version:
 
 - Use TMDB metadata plus local rating data
-- Start with genre-weighted scoring
-- Add director/keyword weighting if the API data supports it cleanly
+- Use the local vector recommender so the app stays free to run
+- Keep the model shape compatible with a later OpenAI embedding + pgvector backend
+
+Recommendation modes:
+
+- Focused: prioritize similarity to the user taste vector
+- Balanced: blend similarity, popularity, rating quality, and novelty
+- Exploratory: increase novelty/diversity while keeping some taste match
 
 ## 9. Visual Direction
 
@@ -232,7 +247,19 @@ For later real users:
 - Supabase for auth and database
 - User table, ratings table, watchlist table, follows table
 - Serverless API route or edge function for protected API calls
+- PostgreSQL `pgvector` for cached movie embeddings
+- OpenAI `text-embedding-3-small` for public movie metadata embeddings
 - Hosted on Vercel or Netlify
+
+Current persistence implementation:
+
+- Supabase Auth is supported when `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` are configured
+- `localStorage` remains the default fallback
+- Account sync stores the user's current app state in one RLS-protected `user_app_state` row
+- When Supabase is configured, saving profile data requires sign-in or an explicit guest choice
+- Guest saves use local browser storage and do not sync across devices
+- Browsing/search/movie detail can remain public, but rating, watchlist, review, Taste Sprint, and preference edits are gated
+- The normalized ratings/watchlist schema can replace the JSON snapshot once the product workflow stabilizes
 
 ## 13. Data Model Draft
 
@@ -253,6 +280,19 @@ For later real users:
 - overview
 - genres
 - runtime
+- director
+- cast
+- embedding
+- embeddingModel
+- embeddingUpdatedAt
+
+### OnboardingPreferences
+
+- userId
+- genres
+- directors
+- favoriteTmdbIds
+- updatedAt
 
 ### Rating
 
@@ -277,38 +317,36 @@ For later real users:
 - followingUserId
 - createdAt
 
-## 14. Build Plan
+## 14. Build Status and Next Steps
 
-### Phase 1: Portfolio Demo
+### Current Local Baseline
 
-- Replace the current static seed library with TMDB search
-- Add rating persistence with local storage
-- Add watchlist persistence with local storage
-- Build clean responsive UI for phone and desktop
-- Remove the decorative generated image direction
-- Add a quick-rating flow that makes rating movies feel fast and addictive
-- Write clear README setup and deployment instructions
+- TMDB search plus a fallback demo catalog
+- Ask BetterBoxd natural-language search with server-side semantic ranking and local fallback
+- Local ratings, watchlist, watched state, reviews, Taste Sprint signals, and recommendation feedback
+- Weighted, diversity-reranked local recommendations built from canonical movie profiles
+- Responsive phone and desktop UI
+- Optional Supabase email/password account sync through an RLS-protected `user_app_state` row
 
-### Phase 2: Hosted Demo
+### Deployment Verification
 
-- Push to GitHub
-- Deploy with GitHub Pages, Vercel, or Netlify
-- Add environment variable handling for TMDB
-- Test from phone using the hosted URL
+- Configure TMDB, server-only OpenAI, and optional Supabase environment variables
+- Apply and verify `supabase/schema.sql` against the intended Supabase project before claiming account sync is live
+- Verify the hosted search, auth, sync, and mobile flows after deployment
 
-### Phase 3: Real User Foundation
+### Later Product Foundation
 
-- Add authentication
-- Move ratings and watchlist to a database
+- Replace JSON snapshot persistence with normalized interaction tables when workflows stabilize
+- Move movie embeddings and candidate search to durable PostgreSQL + `pgvector`
 - Add public profiles
 - Add following
 - Add taste comparison
 
 ## 15. Open Decisions
 
-- Exact implementation of quick-rating / taste-matching interaction
-- Whether to require a TMDB API key before the first usable demo
 - Final app icon / logo mark
+- Whether Google login is needed in addition to email/password
+- When private review notes should become public/social reviews
 
 ## 16. Decisions Made
 
@@ -318,14 +356,18 @@ For later real users:
 - Stack: React + Vite
 - Movie API: TMDB
 - Hosting: Vercel, assuming portfolio/personal use remains within the free Hobby plan
-- Future auth: Google login plus email/password
+- Auth: email/password through Supabase; Google login remains optional future scope
 - Rating style: half-stars
 - Watchlist behavior: users can mark a watchlist movie as watched by rating it
-- Reviews: reserve data model space, but do not build review UI in v1
+- Reviews: private synced review notes now; public/social reviews remain future scope
 - Navigation: Discover, Search, Profile
 - Taste Sprint placement: embedded inside Discover, not a standalone tab
 - Watchlist placement: inside Profile, not a standalone tab
 - Primary quick action: persistent plus button for adding a watched movie
+- Recommendation inputs: weighted ratings, watchlist saves, Taste Sprint signals, and optional onboarding preferences
+- Recommendation modes: Focused, Balanced, Exploratory
+- Production recommender direction: OpenAI embeddings cached in PostgreSQL with `pgvector`
+- Persistence direction: Supabase Auth plus RLS-protected account sync, with local browser storage as fallback
 
 ## 17. Addictive UX Feature
 

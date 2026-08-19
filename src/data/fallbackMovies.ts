@@ -9,6 +9,7 @@ export const fallbackMovies: Movie[] = [
     overview: "A fractured romance told through memory, regret, and a strange medical procedure.",
     genres: ["Romance", "Drama", "Sci-Fi"],
     voteAverage: 8.1,
+    keywords: ["memory", "breakup", "identity", "surreal", "melancholy"],
   },
   {
     id: 313369,
@@ -18,6 +19,7 @@ export const fallbackMovies: Movie[] = [
     overview: "A pianist and an actor fall in love while chasing creative lives in Los Angeles.",
     genres: ["Romance", "Drama", "Music"],
     voteAverage: 7.9,
+    keywords: ["jazz", "ambition", "hollywood", "romance", "dreams"],
   },
   {
     id: 496243,
@@ -27,6 +29,7 @@ export const fallbackMovies: Movie[] = [
     overview: "A struggling family inserts itself into a wealthy household with escalating consequences.",
     genres: ["Drama", "Thriller"],
     voteAverage: 8.5,
+    keywords: ["class conflict", "deception", "family", "satire", "wealth"],
   },
   {
     id: 530915,
@@ -36,6 +39,7 @@ export const fallbackMovies: Movie[] = [
     overview: "Two soldiers cross enemy territory to deliver a message that could save hundreds.",
     genres: ["War", "Drama", "Action"],
     voteAverage: 8.0,
+    keywords: ["war", "mission", "survival", "soldiers", "urgency"],
   },
   {
     id: 324857,
@@ -45,6 +49,7 @@ export const fallbackMovies: Movie[] = [
     overview: "A teenager discovers a multiverse of Spider-heroes and learns what makes him one too.",
     genres: ["Animation", "Action", "Adventure"],
     voteAverage: 8.4,
+    keywords: ["superhero", "multiverse", "coming of age", "animation", "identity"],
   },
   {
     id: 244786,
@@ -54,6 +59,7 @@ export const fallbackMovies: Movie[] = [
     overview: "A young drummer enters a brutal mentorship that tests obsession, ambition, and talent.",
     genres: ["Drama", "Music"],
     voteAverage: 8.4,
+    keywords: ["jazz", "obsession", "mentor", "ambition", "perfectionism"],
   },
   {
     id: 210577,
@@ -63,6 +69,7 @@ export const fallbackMovies: Movie[] = [
     overview: "A missing-person case turns into a media spectacle and a marriage autopsy.",
     genres: ["Mystery", "Thriller", "Drama"],
     voteAverage: 7.9,
+    keywords: ["marriage", "media", "deception", "missing person", "psychological"],
   },
   {
     id: 872585,
@@ -72,6 +79,7 @@ export const fallbackMovies: Movie[] = [
     overview: "A physicist leads a world-changing project and faces the moral fallout of his work.",
     genres: ["Drama", "History"],
     voteAverage: 8.1,
+    keywords: ["biography", "science", "moral conflict", "history", "politics"],
   },
   {
     id: 346698,
@@ -81,6 +89,7 @@ export const fallbackMovies: Movie[] = [
     overview: "A doll leaves her perfect world and confronts identity, culture, and change.",
     genres: ["Comedy", "Adventure"],
     voteAverage: 7.0,
+    keywords: ["identity", "satire", "culture", "fantasy", "comedy"],
   },
   {
     id: 18491,
@@ -90,6 +99,7 @@ export const fallbackMovies: Movie[] = [
     overview: "A surreal and apocalyptic conclusion to a landmark anime story.",
     genres: ["Animation", "Drama", "Sci-Fi"],
     voteAverage: 8.3,
+    keywords: ["anime", "apocalypse", "surreal", "psychological", "identity"],
   },
 ];
 

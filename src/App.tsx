@@ -1,9 +1,48 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { fallbackMovies } from "./data/fallbackMovies";
-import { askBetterBoxd, getMovieDetails, getTrendingMovies, hasTmdbKey, posterUrl, searchMoviesWithDebug } from "./services/tmdb";
-import type { AskBetterBoxdResult, AskFilter, InterestMap, InterestValue, Movie, MovieDebugMap, ProfileSort, RatingMap, ReviewMap, Tab, Theme, WatchedMap, WatchlistMap } from "./types";
+import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { fallbackMovies, genreIds } from "./data/fallbackMovies";
+import { getTopTasteLabel, recommendMovies, type RecommendationResult } from "./services/recommendations";
+import {
+  getCurrentSession,
+  isSupabaseConfigured,
+  loadCloudState,
+  saveCloudState,
+  signIn,
+  signOut,
+  signUp,
+  subscribeToAuth,
+  type AuthSession,
+} from "./services/supabase";
+import {
+  askBetterBoxd,
+  getMovieDetails,
+  getRecommendationCatalog,
+  getTrendingMovies,
+  hasTmdbKey,
+  posterUrl,
+  searchMovies,
+  searchMoviesWithDebug,
+} from "./services/tmdb";
+import type {
+  AskBetterBoxdResult,
+  AskFilter,
+  CloudUserState,
+  InterestMap,
+  InterestValue,
+  Movie,
+  MovieDebugMap,
+  OnboardingPreferences,
+  ProfileSort,
+  RatingMap,
+  RecommendationEvent,
+  RecommendationEventType,
+  RecommendationMode,
+  ReviewMap,
+  Tab,
+  Theme,
+  WatchedMap,
+  WatchlistMap,
+} from "./types";
 
-type AccountMode = "unset" | "guest" | "signIn" | "create";
 type SearchMode = "movies" | "ask";
 
 const ratingsKey = "betterboxd-ratings";
@@ -12,8 +51,11 @@ const reviewsKey = "betterboxd-reviews";
 const themeKey = "betterboxd-theme";
 const watchedKey = "betterboxd-watched";
 const interestKey = "betterboxd-interest";
-const accountModeKey = "betterboxd-account-mode";
-const accountEmailKey = "betterboxd-account-email";
+const preferencesKey = "betterboxd-onboarding-preferences";
+const recommendationModeKey = "betterboxd-recommendation-mode";
+const recommendationEventsKey = "betterboxd-recommendation-events";
+const guestModeKey = "betterboxd-guest-mode";
+const movieCacheKey = "betterboxd-movie-cache";
 const developerModeKey = "betterboxd-developer-mode";
 
 const initialRatings: RatingMap = {
@@ -22,69 +64,91 @@ const initialRatings: RatingMap = {
   "38": 4,
 };
 
+const defaultPreferences: OnboardingPreferences = {
+  genres: [],
+  directors: [],
+  favoriteMovies: {},
+};
+
+const selectableGenres = [...new Set(Object.values(genreIds))].sort();
+
 function readJson<T>(key: string, fallback: T, legacyKey?: string): T {
   const value = localStorage.getItem(key) || (legacyKey ? localStorage.getItem(legacyKey) : null);
   return value ? JSON.parse(value) : fallback;
 }
 
-function getTopGenre(ratings: RatingMap, movies: Movie[]) {
-  const weights = new Map<string, number>();
-  movies.forEach((movie) => {
-    const rating = ratings[movie.id];
-    if (!rating) return;
-    movie.genres.forEach((genre) => weights.set(genre, (weights.get(genre) || 0) + rating));
+function createRecommendationEvent(
+  type: RecommendationEventType,
+  movie: Movie,
+  mode: RecommendationMode,
+  score: number,
+): RecommendationEvent {
+  return {
+    id: `${type}-${movie.id}-${mode}-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    type,
+    movieId: movie.id,
+    movieTitle: movie.title,
+    mode,
+    score,
+    createdAt: Date.now(),
+  };
+}
+
+function trimRecommendationEvents(events: RecommendationEvent[]) {
+  return events.slice(-300);
+}
+
+function mergeMovieLists(...lists: Movie[][]) {
+  const map = new Map<number, Movie>();
+  lists.flat().forEach((movie) => {
+    const existing = map.get(movie.id);
+    map.set(movie.id, { ...existing, ...movie });
   });
-  return [...weights.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || "Taste forming";
+  return [...map.values()];
 }
 
-function recommendMovies(ratings: RatingMap, movies: Movie[]) {
-  const weights = getGenreWeights(ratings, movies);
-
-  return movies
-    .filter((movie) => !ratings[movie.id])
-    .map((movie) => ({
-      movie,
-      score: movie.genres.reduce((total, genre) => total + (weights.get(genre) || 0), 0) + (movie.voteAverage || 0) / 10,
-    }))
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 6)
-    .map(({ movie }) => movie);
+function trimMovieCache(movies: Movie[]) {
+  return mergeMovieLists(movies).slice(-250);
 }
 
-function getGenreWeights(ratings: RatingMap, movies: Movie[]) {
-  const weights = new Map<string, number>();
-  movies.forEach((movie) => {
-    const rating = ratings[movie.id];
-    if (!rating) return;
-    movie.genres.forEach((genre) => weights.set(genre, (weights.get(genre) || 0) + rating));
+function summarizeRecommendationFeedback(events: RecommendationEvent[]) {
+  const impressions = events.filter((event) => event.type === "impression");
+  const opens = events.filter((event) => event.type === "open");
+  const strongActions = events.filter((event) => event.type === "watchlist" || event.type === "highRating");
+  const strongMovieIds = new Set(strongActions.map((event) => event.movieId));
+  const modeStats = new Map<RecommendationMode, { impressions: number; strongActions: number }>();
+
+  events.forEach((event) => {
+    const stats = modeStats.get(event.mode) || { impressions: 0, strongActions: 0 };
+    if (event.type === "impression") stats.impressions += 1;
+    if (event.type === "watchlist" || event.type === "highRating") stats.strongActions += 1;
+    modeStats.set(event.mode, stats);
   });
-  return weights;
+
+  const bestMode = [...modeStats.entries()]
+    .filter(([, stats]) => stats.impressions >= 3 && stats.strongActions > 0)
+    .sort((a, b) => b[1].strongActions / b[1].impressions - a[1].strongActions / a[1].impressions)[0]?.[0];
+
+  return {
+    hasData: impressions.length > 0 || opens.length > 0 || strongActions.length > 0,
+    exploredCount: new Set(opens.map((event) => event.movieId)).size,
+    strongCount: strongMovieIds.size,
+    bestMode,
+  };
 }
 
-function getRecommendationDebug(ratings: RatingMap, movies: Movie[]): MovieDebugMap {
-  const weights = getGenreWeights(ratings, movies);
+function getRecommendationDebug(results: RecommendationResult[]): MovieDebugMap {
   return Object.fromEntries(
-    movies.map((movie) => {
-      const genreSignals = movie.genres
-        .map((genre) => ({ genre, weight: weights.get(genre) || 0 }))
-        .filter(({ weight }) => weight > 0)
-        .sort((a, b) => b.weight - a.weight)
-        .slice(0, 3);
-      const score = genreSignals.reduce((total, signal) => total + signal.weight, 0) + (movie.voteAverage || 0) / 10;
-
-      return [
-        movie.id,
-        {
-          status: "local",
-          mode: "taste-profile",
-          score: Number(score.toFixed(2)),
-          strongestSignals: genreSignals.length
-            ? genreSignals.map(({ genre, weight }) => `${genre}:${weight.toFixed(1)}`)
-            : [`vote:${((movie.voteAverage || 0) / 10).toFixed(2)}`],
-          reasonSource: "Ratings-weighted genre affinity plus TMDB vote average",
-        },
-      ];
-    })
+    results.map((result) => [
+      result.movie.id,
+      {
+        status: "local",
+        mode: "taste-profile",
+        score: Number(result.score.toFixed(3)),
+        strongestSignals: [result.reason],
+        reasonSource: "Local profile embedding, preference signals, and diversity reranking",
+      },
+    ])
   );
 }
 
@@ -92,19 +156,31 @@ function App() {
   const askCache = useRef<Record<string, AskBetterBoxdResult>>({});
   const [tab, setTab] = useState<Tab>("discover");
   const [theme, setTheme] = useState<Theme>(() => readJson(themeKey, "light", "cinecircle-theme"));
+  const [recommendationMode, setRecommendationMode] = useState<RecommendationMode>(() =>
+    readJson<RecommendationMode>(recommendationModeKey, "balanced")
+  );
+  const [preferences, setPreferences] = useState<OnboardingPreferences>(() =>
+    readJson(preferencesKey, defaultPreferences)
+  );
   const [ratings, setRatings] = useState<RatingMap>(() => readJson(ratingsKey, initialRatings, "cinecircle-ratings"));
   const [watchlist, setWatchlist] = useState<WatchlistMap>(() => readJson(watchlistKey, {}, "cinecircle-watchlist"));
   const [watched, setWatched] = useState<WatchedMap>(() => readJson(watchedKey, {}));
   const [interest, setInterest] = useState<InterestMap>(() => readJson(interestKey, {}));
   const [reviews, setReviews] = useState<ReviewMap>(() => readJson(reviewsKey, {}));
-  const [accountMode, setAccountMode] = useState<AccountMode>(() => readJson(accountModeKey, "unset"));
-  const [accountFormMode, setAccountFormMode] = useState<Exclude<AccountMode, "unset" | "guest">>("create");
-  const [accountEmail, setAccountEmail] = useState(() => readJson(accountEmailKey, ""));
-  const [accountEmailDraft, setAccountEmailDraft] = useState(accountEmail);
+  const [recommendationEvents, setRecommendationEvents] = useState<RecommendationEvent[]>(() =>
+    readJson(recommendationEventsKey, [])
+  );
+  const [session, setSession] = useState<AuthSession | null>(null);
+  const [authEmail, setAuthEmail] = useState("");
+  const [authPassword, setAuthPassword] = useState("");
+  const [authMode, setAuthMode] = useState<"signIn" | "signUp">("signIn");
+  const [authPromptOpen, setAuthPromptOpen] = useState(false);
+  const [guestMode, setGuestMode] = useState(() => readJson(guestModeKey, false));
+  const [syncStatus, setSyncStatus] = useState("Saved on this device");
   const [developerMode, setDeveloperMode] = useState(() => readJson(developerModeKey, false));
-  const [saveStatus, setSaveStatus] = useState("Saved on this device");
   const [profileSort, setProfileSort] = useState<ProfileSort>("recentlyWatched");
   const [movies, setMovies] = useState<Movie[]>(fallbackMovies);
+  const [catalogMovies, setCatalogMovies] = useState<Movie[]>(() => readJson(movieCacheKey, fallbackMovies));
   const [searchQuery, setSearchQuery] = useState("");
   const [searchMode, setSearchMode] = useState<SearchMode>("movies");
   const [searchResults, setSearchResults] = useState<Movie[]>([]);
@@ -119,6 +195,12 @@ function App() {
   const [sprintIndex, setSprintIndex] = useState(0);
   const [detailMovie, setDetailMovie] = useState<Movie | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [favoriteMovieQuery, setFavoriteMovieQuery] = useState("");
+  const [favoriteMovieResults, setFavoriteMovieResults] = useState<Movie[]>(fallbackMovies.slice(0, 5));
+  const [directorInput, setDirectorInput] = useState("");
+  const loggedImpressionGroups = useRef(new Set<string>());
+  const cloudLoadedForUser = useRef<string | null>(null);
+  const skipNextCloudSave = useRef(false);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -128,6 +210,14 @@ function App() {
   useEffect(() => {
     localStorage.setItem(ratingsKey, JSON.stringify(ratings));
   }, [ratings]);
+
+  useEffect(() => {
+    localStorage.setItem(recommendationModeKey, JSON.stringify(recommendationMode));
+  }, [recommendationMode]);
+
+  useEffect(() => {
+    localStorage.setItem(preferencesKey, JSON.stringify(preferences));
+  }, [preferences]);
 
   useEffect(() => {
     localStorage.setItem(watchlistKey, JSON.stringify(watchlist));
@@ -146,25 +236,73 @@ function App() {
   }, [reviews]);
 
   useEffect(() => {
-    localStorage.setItem(accountModeKey, JSON.stringify(accountMode));
-  }, [accountMode]);
+    localStorage.setItem(recommendationEventsKey, JSON.stringify(recommendationEvents.slice(-300)));
+  }, [recommendationEvents]);
 
   useEffect(() => {
-    localStorage.setItem(accountEmailKey, JSON.stringify(accountEmail));
-  }, [accountEmail]);
+    localStorage.setItem(guestModeKey, JSON.stringify(guestMode));
+  }, [guestMode]);
+
+  useEffect(() => {
+    localStorage.setItem(movieCacheKey, JSON.stringify(trimMovieCache(catalogMovies)));
+  }, [catalogMovies]);
 
   useEffect(() => {
     localStorage.setItem(developerModeKey, JSON.stringify(developerMode));
   }, [developerMode]);
 
   useEffect(() => {
-    if (saveStatus === "Saved on this device") return;
-    const timeout = window.setTimeout(() => setSaveStatus("Saved on this device"), 3200);
-    return () => window.clearTimeout(timeout);
-  }, [saveStatus]);
+    if (!isSupabaseConfigured) {
+      setSyncStatus("Saved on this device");
+      return;
+    }
+
+    getCurrentSession()
+      .then(setSession)
+      .catch((error) => setSyncStatus(error.message));
+
+    return subscribeToAuth((nextSession) => {
+      setSession(nextSession);
+      if (!nextSession) {
+        cloudLoadedForUser.current = null;
+        setSyncStatus("Signed out");
+      }
+    });
+  }, []);
 
   useEffect(() => {
-    getTrendingMovies().then(setMovies).catch(() => setMovies(fallbackMovies));
+    const userId = session?.user.id;
+    if (!userId || cloudLoadedForUser.current === userId) return;
+
+    setSyncStatus("Loading account data");
+    loadCloudState(userId)
+      .then((cloudState) => {
+        if (cloudState) {
+          skipNextCloudSave.current = true;
+          setRatings(cloudState.ratings || {});
+          setWatchlist(cloudState.watchlist || {});
+          setWatched(cloudState.watched || {});
+          setInterest(cloudState.interest || {});
+          setReviews(cloudState.reviews || {});
+          setPreferences(cloudState.preferences || defaultPreferences);
+          setRecommendationEvents(cloudState.recommendationEvents || []);
+        }
+        cloudLoadedForUser.current = userId;
+        setSyncStatus(cloudState ? "Synced to account" : "Account ready");
+      })
+      .catch((error) => setSyncStatus(error.message));
+  }, [session]);
+
+  useEffect(() => {
+    getTrendingMovies()
+      .then((trending) => {
+        setMovies(trending);
+        rememberMovies(trending);
+      })
+      .catch(() => setMovies(fallbackMovies));
+    getRecommendationCatalog()
+      .then(rememberMovies)
+      .catch(() => undefined);
   }, []);
 
   useEffect(() => {
@@ -198,6 +336,7 @@ function App() {
           setAskFilters(cached.filters);
           setAskExplanation(cached.explanation);
           setAskLoading(false);
+          rememberMovies(cached.movies);
           return;
         }
 
@@ -210,6 +349,7 @@ function App() {
             setSearchDebug(result.debug);
             setAskFilters(result.filters);
             setAskExplanation(result.explanation);
+            rememberMovies(result.movies);
           })
           .catch(() => {
             if (cancelled) return;
@@ -227,11 +367,12 @@ function App() {
       setAskFilters([]);
       setAskExplanation("");
       setAskLoading(false);
-      searchMoviesWithDebug(searchQuery)
+      searchMoviesWithDebug(query)
         .then((result) => {
           if (cancelled) return;
           setSearchResults(result.movies);
           setSearchDebug(result.debug);
+          rememberMovies(result.movies);
         })
         .catch(() => {
           if (cancelled) return;
@@ -247,29 +388,69 @@ function App() {
 
   useEffect(() => {
     const timeout = window.setTimeout(() => {
-      searchMoviesWithDebug(quickQuery).then((result) => setQuickResults(result.movies.length ? result.movies : fallbackMovies.slice(0, 5)));
+      searchMovies(quickQuery).then((results) => {
+        const nextResults = results.length ? results : fallbackMovies.slice(0, 5);
+        setQuickResults(nextResults);
+        rememberMovies(nextResults);
+      });
     }, 200);
     return () => window.clearTimeout(timeout);
   }, [quickQuery]);
+
+  useEffect(() => {
+    const timeout = window.setTimeout(() => {
+      searchMovies(favoriteMovieQuery).then((results) => {
+        const nextResults = results.length ? results : fallbackMovies.slice(0, 5);
+        setFavoriteMovieResults(nextResults);
+        rememberMovies(nextResults);
+      });
+    }, 200);
+    return () => window.clearTimeout(timeout);
+  }, [favoriteMovieQuery]);
 
   const allKnownMovies = useMemo(() => {
     const map = new Map<number, Movie>();
     [
       ...fallbackMovies,
+      ...catalogMovies,
       ...movies,
       ...searchResults,
       ...quickResults,
+      ...favoriteMovieResults,
       ...Object.values(watchlist),
       ...Object.values(watched).map((entry) => entry.movie),
       ...Object.values(interest).map((entry) => entry.movie),
+      ...Object.values(preferences.favoriteMovies),
       ...(detailMovie ? [detailMovie] : []),
     ].forEach((movie) => map.set(movie.id, movie));
     return [...map.values()];
-  }, [movies, searchResults, quickResults, watchlist, watched, interest, detailMovie]);
+  }, [catalogMovies, movies, searchResults, quickResults, favoriteMovieResults, watchlist, watched, interest, preferences, detailMovie]);
 
-  const recommendations = useMemo(() => recommendMovies(ratings, allKnownMovies), [ratings, allKnownMovies]);
-  const recommendationDebug = useMemo(() => getRecommendationDebug(ratings, recommendations), [ratings, recommendations]);
-  const topGenre = useMemo(() => getTopGenre(ratings, allKnownMovies), [ratings, allKnownMovies]);
+  const recommendationResults = useMemo(
+    () =>
+      recommendMovies({
+        movies: allKnownMovies,
+        ratings,
+        watchlist,
+        interest,
+        preferences,
+        mode: recommendationMode,
+      }),
+    [allKnownMovies, ratings, watchlist, interest, preferences, recommendationMode]
+  );
+  const recommendations = recommendationResults.map(({ movie }) => movie);
+  const recommendationByMovieId = useMemo(
+    () => new Map(recommendationResults.map((result) => [result.movie.id, result])),
+    [recommendationResults]
+  );
+  const recommendationDebug = useMemo(
+    () => getRecommendationDebug(recommendationResults),
+    [recommendationResults]
+  );
+  const topGenre = useMemo(
+    () => getTopTasteLabel(ratings, allKnownMovies, preferences),
+    [ratings, allKnownMovies, preferences]
+  );
   const sprintQueue = recommendations.length ? recommendations : movies.filter((movie) => !ratings[movie.id]);
   const sprintMovie = sprintQueue[sprintIndex % Math.max(sprintQueue.length, 1)];
   const interestMovies = useMemo(
@@ -288,49 +469,70 @@ function App() {
       return (watched[b.id]?.watchedAt || 0) - (watched[a.id]?.watchedAt || 0);
     });
   }, [allKnownMovies, profileSort, ratings, watched]);
+  const recommendationFeedback = useMemo(
+    () => summarizeRecommendationFeedback(recommendationEvents),
+    [recommendationEvents]
+  );
+  const cloudState = useMemo<CloudUserState>(
+    () => ({
+      ratings,
+      watchlist,
+      watched,
+      interest,
+      reviews,
+      preferences,
+      recommendationEvents: recommendationEvents.slice(-300),
+    }),
+    [ratings, watchlist, watched, interest, reviews, preferences, recommendationEvents]
+  );
 
-  function announceSave(message: string) {
-    setSaveStatus(`${message} locally`);
-  }
+  useEffect(() => {
+    const userId = session?.user.id;
+    if (!userId || cloudLoadedForUser.current !== userId) return;
 
-  function toggleTheme() {
-    setTheme((currentTheme) => (currentTheme === "light" ? "dark" : "light"));
-    announceSave("Theme saved");
-  }
+    if (skipNextCloudSave.current) {
+      skipNextCloudSave.current = false;
+      return;
+    }
 
-  function chooseGuestMode() {
-    setAccountMode("guest");
-    setAccountEmail("");
-    setAccountEmailDraft("");
-    announceSave("Guest mode selected");
-  }
+    setSyncStatus("Saving");
+    const timeout = window.setTimeout(() => {
+      saveCloudState(userId, cloudState)
+        .then(() => setSyncStatus("Synced to account"))
+        .catch((error) => setSyncStatus(error.message));
+    }, 650);
 
-  function prepareAccountMode(mode: Exclude<AccountMode, "unset" | "guest">) {
-    setAccountMode(mode);
-    setAccountFormMode(mode);
-    setAccountEmailDraft(accountEmail);
-  }
+    return () => window.clearTimeout(timeout);
+  }, [cloudState, session]);
 
-  function submitAccountEmail(email: string) {
-    const normalizedEmail = email.trim();
-    if (!normalizedEmail) return;
-    setAccountEmail(normalizedEmail);
-    setAccountMode(accountFormMode);
-    announceSave("Account email saved");
-  }
+  useEffect(() => {
+    const signature = `${recommendationMode}:${recommendationResults.map(({ movie }) => movie.id).join(",")}`;
+    if (!recommendationResults.length || loggedImpressionGroups.current.has(signature)) return;
 
-  function toggleDeveloperMode(enabled: boolean) {
-    setDeveloperMode(enabled);
-    announceSave(`Developer mode ${enabled ? "enabled" : "disabled"}`);
-  }
+    loggedImpressionGroups.current.add(signature);
+    setRecommendationEvents((current) =>
+      trimRecommendationEvents([
+        ...current,
+        ...recommendationResults.map(({ movie, score }) =>
+          createRecommendationEvent("impression", movie, recommendationMode, score)
+        ),
+      ])
+    );
+  }, [recommendationMode, recommendationResults]);
 
   function rateMovie(movie: Movie, rating: number) {
+    if (!requireAccountAction()) return;
+    logRecommendationOutcome(movie, rating >= 4 ? "highRating" : "rating");
     setRatings((current) => ({ ...current, [movie.id]: rating }));
-    markWatched(movie, false);
-    announceSave(`${movie.title} rating saved`);
+    markWatchedState(movie);
   }
 
-  function markWatched(movie: Movie, notify = true) {
+  function markWatched(movie: Movie) {
+    if (!requireAccountAction()) return;
+    markWatchedState(movie);
+  }
+
+  function markWatchedState(movie: Movie) {
     setWatched((current) => ({
       ...current,
       [movie.id]: { movie, watchedAt: Date.now() },
@@ -340,10 +542,10 @@ function App() {
       delete next[movie.id];
       return next;
     });
-    if (notify) announceSave(`${movie.title} marked watched`);
   }
 
-  function removeRating(movie: Movie, notify = true) {
+  function removeRating(movie: Movie) {
+    if (!requireAccountAction()) return;
     setRatings((current) => {
       const next = { ...current };
       delete next[movie.id];
@@ -354,59 +556,108 @@ function App() {
       delete next[movie.id];
       return next;
     });
-    if (notify) announceSave(`${movie.title} rating removed`);
   }
 
   function removeWatched(movie: Movie) {
-    removeRating(movie, false);
+    if (!requireAccountAction()) return;
+    removeRating(movie);
     setWatched((current) => {
       const next = { ...current };
       delete next[movie.id];
       return next;
     });
-    announceSave(`${movie.title} removed from watched`);
   }
 
   function toggleWatchlist(movie: Movie) {
-    const wasSaved = Boolean(watchlist[movie.id]);
+    if (!requireAccountAction()) return;
+    if (!watchlist[movie.id]) logRecommendationOutcome(movie, "watchlist");
     setWatchlist((current) => {
       const next = { ...current };
       if (next[movie.id]) delete next[movie.id];
       else next[movie.id] = movie;
       return next;
     });
-    announceSave(`${movie.title} ${wasSaved ? "removed from watchlist" : "saved to watchlist"}`);
   }
 
   function setMovieInterest(movie: Movie, value: InterestValue) {
+    if (!requireAccountAction()) return;
     setInterest((current) => ({
       ...current,
       [movie.id]: { movie, value, updatedAt: Date.now() },
     }));
-    announceSave(`${movie.title} marked ${interestLabel(value).toLowerCase()}`);
     nextSprint();
   }
 
   function removeFromWatchlist(movie: Movie) {
+    if (!requireAccountAction()) return;
     setWatchlist((current) => {
       const next = { ...current };
       delete next[movie.id];
       return next;
     });
-    announceSave(`${movie.title} removed from watchlist`);
+  }
+
+  function togglePreferenceGenre(genre: string) {
+    if (!requireAccountAction()) return;
+    setPreferences((current) => ({
+      ...current,
+      genres: current.genres.includes(genre)
+        ? current.genres.filter((currentGenre) => currentGenre !== genre)
+        : [...current.genres, genre],
+    }));
+  }
+
+  function addFavoriteMovie(movie: Movie) {
+    if (!requireAccountAction()) return;
+    setPreferences((current) => ({
+      ...current,
+      favoriteMovies: { ...current.favoriteMovies, [movie.id]: movie },
+    }));
+    setFavoriteMovieQuery("");
+  }
+
+  function removeFavoriteMovie(movie: Movie) {
+    if (!requireAccountAction()) return;
+    setPreferences((current) => {
+      const next = { ...current.favoriteMovies };
+      delete next[movie.id];
+      return { ...current, favoriteMovies: next };
+    });
+  }
+
+  function addDirector() {
+    if (!requireAccountAction()) return;
+    const director = directorInput.trim();
+    if (!director) return;
+    setPreferences((current) => ({
+      ...current,
+      directors: current.directors.some((currentDirector) => currentDirector.toLowerCase() === director.toLowerCase())
+        ? current.directors
+        : [...current.directors, director],
+    }));
+    setDirectorInput("");
+  }
+
+  function removeDirector(director: string) {
+    if (!requireAccountAction()) return;
+    setPreferences((current) => ({
+      ...current,
+      directors: current.directors.filter((currentDirector) => currentDirector !== director),
+    }));
   }
 
   function updateReview(movie: Movie, review: string) {
+    if (!requireAccountAction()) return;
     setReviews((current) => {
       const next = { ...current };
       if (review.trim()) next[movie.id] = review;
       else delete next[movie.id];
       return next;
     });
-    announceSave(`${movie.title} review note saved`);
   }
 
   async function openMovie(movie: Movie) {
+    logRecommendationOutcome(movie, "open");
     setDetailMovie(movie);
     setDetailLoading(true);
     try {
@@ -424,6 +675,74 @@ function App() {
 
   function previousSprint() {
     setSprintIndex((index) => (index <= 0 ? Math.max(sprintQueue.length - 1, 0) : index - 1));
+  }
+
+  function rememberMovies(nextMovies: Movie[]) {
+    if (!nextMovies.length) return;
+    setCatalogMovies((current) => trimMovieCache(mergeMovieLists(current, nextMovies)));
+  }
+
+  function logRecommendationOutcome(movie: Movie, type: RecommendationEventType) {
+    if (type === "impression") return;
+    const recommendation = recommendationByMovieId.get(movie.id);
+    if (!recommendation) return;
+
+    setRecommendationEvents((current) =>
+      trimRecommendationEvents([
+        ...current,
+        createRecommendationEvent(type, movie, recommendationMode, recommendation.score),
+      ])
+    );
+  }
+
+  function requireAccountAction() {
+    if (!isSupabaseConfigured || session || guestMode) return true;
+    setAuthPromptOpen(true);
+    setSyncStatus("Sign in to sync across devices, or continue as guest");
+    return false;
+  }
+
+  function continueAsGuest() {
+    setGuestMode(true);
+    setAuthPromptOpen(false);
+    setSyncStatus("Saving locally as guest");
+  }
+
+  async function submitAuth(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!authEmail.trim() || !authPassword) return;
+
+    setSyncStatus(authMode === "signIn" ? "Signing in" : "Creating account");
+    try {
+      const nextSession =
+        authMode === "signIn"
+          ? await signIn(authEmail.trim(), authPassword)
+          : await signUp(authEmail.trim(), authPassword);
+      setSession(nextSession);
+      if (nextSession) setGuestMode(false);
+      setAuthPassword("");
+      if (nextSession) setAuthPromptOpen(false);
+      setSyncStatus(
+        nextSession
+          ? "Account ready"
+          : "Check your email for a Supabase confirmation message for BetterBoxd"
+      );
+    } catch (error) {
+      setSyncStatus(error instanceof Error ? error.message : "Authentication failed");
+    }
+  }
+
+  async function handleSignOut() {
+    setSyncStatus("Signing out");
+    try {
+      await signOut();
+      setSession(null);
+      setGuestMode(false);
+      setAuthPromptOpen(false);
+      setSyncStatus("Signed out");
+    } catch (error) {
+      setSyncStatus(error instanceof Error ? error.message : "Could not sign out");
+    }
   }
 
   function navButton(value: Tab, label: string) {
@@ -457,8 +776,7 @@ function App() {
             {navButton("profile", "Profile")}
           </nav>
           <div className="topbar-actions">
-            <span className="save-status" aria-live="polite">{saveStatus}</span>
-            <button className="theme-toggle" onClick={toggleTheme}>
+            <button className="theme-toggle" onClick={() => setTheme(theme === "light" ? "dark" : "light")}>
               {theme === "light" ? "Dark" : "Light"}
             </button>
           </div>
@@ -519,15 +837,24 @@ function App() {
 
               <MovieSection
                 title="Recommended for you"
-                subtitle={`Because your taste leans ${topGenre.toLowerCase()}`}
+                subtitle={`${recommendationMode} mode · taste leans ${topGenre.toLowerCase()}`}
                 movies={recommendations}
+                recommendationResults={recommendationResults}
+                debug={developerMode ? recommendationDebug : undefined}
                 ratings={ratings}
                 watchlist={watchlist}
                 onRate={rateMovie}
                 onWatchlist={toggleWatchlist}
                 onOpen={openMovie}
-                debug={developerMode ? recommendationDebug : undefined}
               />
+
+              <section className="movie-section recommendation-controls">
+                <div className="mode-tabs" aria-label="Recommendation mode">
+                  <ModeButton mode="focused" active={recommendationMode} onChange={setRecommendationMode} />
+                  <ModeButton mode="balanced" active={recommendationMode} onChange={setRecommendationMode} />
+                  <ModeButton mode="exploratory" active={recommendationMode} onChange={setRecommendationMode} />
+                </div>
+              </section>
             </div>
           </section>
         )}
@@ -565,6 +892,7 @@ function App() {
               movies={searchQuery ? searchResults : movies}
               ratings={ratings}
               watchlist={watchlist}
+              debug={developerMode ? searchDebug : undefined}
               onRate={rateMovie}
               onWatchlist={toggleWatchlist}
               onOpen={openMovie}
@@ -574,20 +902,6 @@ function App() {
 
         {tab === "profile" && (
           <section className="screen">
-            <AccountSettings
-              mode={accountMode}
-              formMode={accountFormMode}
-              email={accountEmail}
-              emailDraft={accountEmailDraft}
-              saveStatus={saveStatus}
-              developerMode={developerMode}
-              onEmailDraftChange={setAccountEmailDraft}
-              onChooseGuest={chooseGuestMode}
-              onPrepareAccount={prepareAccountMode}
-              onSubmitEmail={submitAccountEmail}
-              onToggleDeveloperMode={toggleDeveloperMode}
-            />
-
             <section className="movie-section profile-list">
               <div className="section-title profile-title">
                 <div>
@@ -609,9 +923,107 @@ function App() {
                 onRate={rateMovie}
                 onWatchlist={toggleWatchlist}
                 onOpen={openMovie}
-                debug={developerMode ? getRecommendationDebug(ratings, profileMovies) : undefined}
               />
               {!profileMovies.length && <p className="empty">Mark a movie watched to start your profile.</p>}
+            </section>
+
+            <section className="movie-section profile-list">
+              <div className="section-title profile-title">
+                <div>
+                  <p className="kicker">Recommendations</p>
+                  <h2>Feedback loop</h2>
+                </div>
+              </div>
+              <RecommendationFeedbackPanel feedback={recommendationFeedback} />
+            </section>
+
+            <section className="movie-section profile-list taste-setup">
+              <div className="section-title profile-title">
+                <div>
+                  <p className="kicker">Settings</p>
+                  <h2>Taste preferences</h2>
+                </div>
+              </div>
+
+              <AccountSettings
+                configured={isSupabaseConfigured}
+                email={authEmail}
+                password={authPassword}
+                mode={authMode}
+                sessionEmail={session?.user.email || ""}
+                syncStatus={syncStatus}
+                guestMode={guestMode}
+                developerMode={developerMode}
+                onEmail={setAuthEmail}
+                onPassword={setAuthPassword}
+                onMode={setAuthMode}
+                onSubmit={submitAuth}
+                onSignOut={handleSignOut}
+                onGuest={continueAsGuest}
+                onToggleDeveloperMode={setDeveloperMode}
+              />
+
+              <div className="setup-grid">
+                <section>
+                  <p className="setup-label">Genres</p>
+                  <div className="chip-grid">
+                    {selectableGenres.map((genre) => (
+                      <button
+                        key={genre}
+                        className={preferences.genres.includes(genre) ? "chip is-active" : "chip"}
+                        onClick={() => togglePreferenceGenre(genre)}
+                      >
+                        {genre}
+                      </button>
+                    ))}
+                  </div>
+                </section>
+
+                <section>
+                  <p className="setup-label">Favorite movies</p>
+                  <input
+                    className="compact-input"
+                    value={favoriteMovieQuery}
+                    onChange={(event) => setFavoriteMovieQuery(event.target.value)}
+                    placeholder="Search favorites"
+                  />
+                  <div className="mini-results">
+                    {favoriteMovieResults.slice(0, 4).map((movie) => (
+                      <button key={movie.id} onClick={() => addFavoriteMovie(movie)}>
+                        <span>{movie.title}</span>
+                        <small>{movie.year}</small>
+                      </button>
+                    ))}
+                  </div>
+                  <PillList movies={Object.values(preferences.favoriteMovies)} onRemove={removeFavoriteMovie} />
+                </section>
+
+                <section>
+                  <p className="setup-label">Directors</p>
+                  <form
+                    className="director-form"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      addDirector();
+                    }}
+                  >
+                    <input
+                      className="compact-input"
+                      value={directorInput}
+                      onChange={(event) => setDirectorInput(event.target.value)}
+                      placeholder="Type a director"
+                    />
+                    <button>Add</button>
+                  </form>
+                  <div className="pill-row">
+                    {preferences.directors.map((director) => (
+                      <button key={director} onClick={() => removeDirector(director)}>
+                        {director}
+                      </button>
+                    ))}
+                  </div>
+                </section>
+              </div>
             </section>
 
             <section className="movie-section profile-list">
@@ -629,7 +1041,6 @@ function App() {
                   onRate={rateMovie}
                   onWatchlist={toggleWatchlist}
                   onOpen={openMovie}
-                  debug={developerMode ? getRecommendationDebug(ratings, Object.values(watchlist)) : undefined}
                 />
               ) : (
                 <p className="empty">Your watchlist is empty.</p>
@@ -670,7 +1081,7 @@ function App() {
         {navButton("profile", "Profile")}
       </nav>
 
-      <button className="floating-add" onClick={() => setQuickAddOpen(true)}>
+      <button className="floating-add" onClick={() => (requireAccountAction() ? setQuickAddOpen(true) : undefined)}>
         <span className="plus-icon" aria-hidden="true" />
         <span className="sr-only">Quick add watched movie</span>
       </button>
@@ -728,6 +1139,37 @@ function App() {
         </div>
       )}
 
+      {authPromptOpen && !session && (
+        <div className="modal-backdrop" role="presentation" onMouseDown={() => setAuthPromptOpen(false)}>
+          <section className="modal auth-modal" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="modal-head">
+              <div>
+                <p className="kicker">Account required</p>
+                <h2>Sign in to save movies.</h2>
+              </div>
+              <button onClick={() => setAuthPromptOpen(false)}>Close</button>
+            </div>
+            <AccountSettings
+              configured={isSupabaseConfigured}
+              email={authEmail}
+              password={authPassword}
+              mode={authMode}
+              sessionEmail=""
+              syncStatus={syncStatus}
+              guestMode={guestMode}
+              developerMode={developerMode}
+              onEmail={setAuthEmail}
+              onPassword={setAuthPassword}
+              onMode={setAuthMode}
+              onSubmit={submitAuth}
+              onSignOut={handleSignOut}
+              onGuest={continueAsGuest}
+              onToggleDeveloperMode={setDeveloperMode}
+            />
+          </section>
+        </div>
+      )}
+
       {detailMovie && (
         <MovieDetailModal
           movie={detailMovie}
@@ -763,105 +1205,11 @@ function SearchModeControl({ mode, onChange }: { mode: SearchMode; onChange: (mo
   );
 }
 
-function AccountSettings({
-  mode,
-  formMode,
-  email,
-  emailDraft,
-  saveStatus,
-  developerMode,
-  onEmailDraftChange,
-  onChooseGuest,
-  onPrepareAccount,
-  onSubmitEmail,
-  onToggleDeveloperMode,
-}: {
-  mode: AccountMode;
-  formMode: Exclude<AccountMode, "unset" | "guest">;
-  email: string;
-  emailDraft: string;
-  saveStatus: string;
-  developerMode: boolean;
-  onEmailDraftChange: (email: string) => void;
-  onChooseGuest: () => void;
-  onPrepareAccount: (mode: Exclude<AccountMode, "unset" | "guest">) => void;
-  onSubmitEmail: (email: string) => void;
-  onToggleDeveloperMode: (enabled: boolean) => void;
-}) {
-  const accountActionLabel = formMode === "create" ? "Create account" : "Sign in";
-  const accountStatus =
-    mode === "guest"
-      ? "Guest mode"
-      : email
-        ? "Account email saved"
-        : mode === "unset"
-          ? "Choose how to save"
-          : accountActionLabel;
-
-  return (
-    <section className="account-panel" aria-labelledby="account-settings-title">
-      <div className="account-summary">
-        <div>
-          <p className="kicker">Profile settings</p>
-          <h2 id="account-settings-title">Account and saves</h2>
-        </div>
-        <span>{saveStatus}</span>
-      </div>
-
-      <div className="account-grid">
-        <div className="account-choice">
-          <strong>{accountStatus}</strong>
-          <p>Create an account to sync ratings, reviews, and watchlist across devices. Continue as guest to keep everything on this device.</p>
-          {email && <small>{email}</small>}
-          <div className="account-actions" aria-label="Account options">
-            <button className={formMode === "create" && mode !== "guest" ? "is-active" : ""} onClick={() => onPrepareAccount("create")}>
-              Create account
-            </button>
-            <button className={formMode === "signIn" && mode !== "guest" ? "is-active" : ""} onClick={() => onPrepareAccount("signIn")}>
-              Sign in
-            </button>
-            <button className={mode === "guest" ? "is-active" : ""} onClick={onChooseGuest}>
-              Continue as guest
-            </button>
-          </div>
-        </div>
-
-        <form
-          className="account-form"
-          onSubmit={(event) => {
-            event.preventDefault();
-            onSubmitEmail(emailDraft);
-          }}
-        >
-          <label>
-            <span>Email</span>
-            <input
-              type="email"
-              value={emailDraft}
-              onChange={(event) => onEmailDraftChange(event.target.value)}
-              placeholder={formMode === "create" ? "you@example.com" : "email used for your account"}
-            />
-          </label>
-          <button type="submit">{accountActionLabel}</button>
-          <p>Account sync is ready for the future Supabase flow. Until auth is connected, changes are saved locally.</p>
-        </form>
-      </div>
-
-      <label className="developer-toggle">
-        <span>
-          <strong>Developer mode</strong>
-          <small>Show recommender and semantic-search diagnostics on movie cards.</small>
-        </span>
-        <input type="checkbox" checked={developerMode} onChange={(event) => onToggleDeveloperMode(event.target.checked)} />
-      </label>
-    </section>
-  );
-}
-
 function MovieSection(props: {
   title: string;
   subtitle: string;
   movies: Movie[];
+  recommendationResults?: RecommendationResult[];
   ratings: RatingMap;
   watchlist: WatchlistMap;
   watched?: WatchedMap;
@@ -881,7 +1229,7 @@ function MovieSection(props: {
         </div>
       </div>
       {props.movies.length ? (
-        <MovieGrid {...props} />
+        <MovieGrid {...props} recommendationReasons={getRecommendationReasons(props.recommendationResults)} />
       ) : (
         <p className="empty">{props.empty || "No movies yet."}</p>
       )}
@@ -891,6 +1239,7 @@ function MovieSection(props: {
 
 function MovieGrid(props: {
   movies: Movie[];
+  recommendationReasons?: Map<number, string>;
   ratings: RatingMap;
   watchlist: WatchlistMap;
   watched?: WatchedMap;
@@ -910,6 +1259,9 @@ function MovieGrid(props: {
               <strong>{movie.title}</strong>
             </button>
             <span>{movie.year}</span>
+            {props.recommendationReasons?.get(movie.id) && (
+              <small className="recommendation-reason">{props.recommendationReasons.get(movie.id)}</small>
+            )}
           </div>
           <div className="card-actions">
             <button onClick={() => props.onWatchlist(movie)}>{props.watchlist[movie.id] ? "Saved" : "Add to list"}</button>
@@ -937,6 +1289,166 @@ function DebugPanel({ debug }: { debug: NonNullable<MovieDebugMap[number]> }) {
       <small>{debug.strongestSignals.join(" · ")}</small>
     </div>
   );
+}
+
+function getRecommendationReasons(results?: RecommendationResult[]) {
+  if (!results) return undefined;
+  return new Map(results.map((result) => [result.movie.id, result.reason]));
+}
+
+function ModeButton({
+  mode,
+  active,
+  onChange,
+}: {
+  mode: RecommendationMode;
+  active: RecommendationMode;
+  onChange: (mode: RecommendationMode) => void;
+}) {
+  return (
+    <button className={active === mode ? "is-active" : ""} onClick={() => onChange(mode)}>
+      {mode[0].toUpperCase() + mode.slice(1)}
+    </button>
+  );
+}
+
+function PillList({ movies, onRemove }: { movies: Movie[]; onRemove: (movie: Movie) => void }) {
+  if (!movies.length) return null;
+
+  return (
+    <div className="pill-row">
+      {movies.map((movie) => (
+        <button key={movie.id} onClick={() => onRemove(movie)}>
+          {movie.title}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function RecommendationFeedbackPanel({
+  feedback,
+}: {
+  feedback: ReturnType<typeof summarizeRecommendationFeedback>;
+}) {
+  if (!feedback.hasData) {
+    return (
+      <p className="empty">
+        Your recommendations will adapt as you open, save, and rate movies from Discover.
+      </p>
+    );
+  }
+
+  return (
+    <div className="feedback-panel">
+      <div>
+        <span>Worth checking out</span>
+        <strong>{feedback.exploredCount}</strong>
+      </div>
+      <div>
+        <span>Saved or loved</span>
+        <strong>{feedback.strongCount}</strong>
+      </div>
+      <div>
+        <span>Best fit</span>
+        <strong>{feedback.bestMode ? titleCase(feedback.bestMode) : "Learning"}</strong>
+      </div>
+    </div>
+  );
+}
+
+function AccountSettings({
+  configured,
+  email,
+  password,
+  mode,
+  sessionEmail,
+  syncStatus,
+  guestMode,
+  developerMode,
+  onEmail,
+  onPassword,
+  onMode,
+  onSubmit,
+  onSignOut,
+  onGuest,
+  onToggleDeveloperMode,
+}: {
+  configured: boolean;
+  email: string;
+  password: string;
+  mode: "signIn" | "signUp";
+  sessionEmail: string;
+  syncStatus: string;
+  guestMode: boolean;
+  developerMode: boolean;
+  onEmail: (email: string) => void;
+  onPassword: (password: string) => void;
+  onMode: (mode: "signIn" | "signUp") => void;
+  onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+  onSignOut: () => void;
+  onGuest: () => void;
+  onToggleDeveloperMode: (enabled: boolean) => void;
+}) {
+  return (
+    <section className="account-settings">
+      <div>
+        <p className="setup-label">Account sync</p>
+        <strong>{sessionEmail || (guestMode ? "Guest profile" : "Local profile")}</strong>
+        <span>{configured ? syncStatus : "Add Supabase env vars to enable account sync"}</span>
+      </div>
+
+      {configured && sessionEmail ? (
+        <button onClick={onSignOut}>Sign out</button>
+      ) : configured ? (
+        <div className="auth-stack">
+          <form onSubmit={onSubmit}>
+            <input
+              value={email}
+              onChange={(event) => onEmail(event.target.value)}
+              placeholder="Email"
+              type="email"
+              autoComplete="email"
+            />
+            <input
+              value={password}
+              onChange={(event) => onPassword(event.target.value)}
+              placeholder="Password"
+              type="password"
+              autoComplete={mode === "signIn" ? "current-password" : "new-password"}
+            />
+            <div className="auth-actions">
+              <button type="submit">{mode === "signIn" ? "Sign in" : "Create account"}</button>
+              <button type="button" onClick={() => onMode(mode === "signIn" ? "signUp" : "signIn")}>
+                {mode === "signIn" ? "New account" : "Use existing"}
+              </button>
+            </div>
+          </form>
+          {!guestMode && (
+            <button className="guest-button" onClick={onGuest}>
+              Continue as guest
+            </button>
+          )}
+        </div>
+      ) : null}
+
+      <label className="developer-toggle">
+        <span>
+          <strong>Developer mode</strong>
+          <small>Show recommender and semantic-search diagnostics on movie cards.</small>
+        </span>
+        <input
+          type="checkbox"
+          checked={developerMode}
+          onChange={(event) => onToggleDeveloperMode(event.target.checked)}
+        />
+      </label>
+    </section>
+  );
+}
+
+function titleCase(value: string) {
+  return value[0].toUpperCase() + value.slice(1);
 }
 
 function Poster({

@@ -17,6 +17,7 @@ type TmdbMovie = {
   genre_ids?: number[];
   vote_average?: number;
   popularity?: number;
+  original_language?: string;
 };
 
 type TmdbMovieDetail = TmdbMovie & {
@@ -26,6 +27,10 @@ type TmdbMovieDetail = TmdbMovie & {
     cast?: Array<{ name: string; order: number }>;
     crew?: Array<{ name: string; job: string }>;
   };
+  production_countries?: Array<{ name: string }>;
+  keywords?: { keywords?: Array<{ name: string }> };
+  recommendations?: { results?: TmdbMovie[] };
+  similar?: { results?: TmdbMovie[] };
 };
 
 type AskIntent = {
@@ -53,6 +58,7 @@ const mapMovie = (movie: TmdbMovie): Movie => ({
   genres: (movie.genre_ids || []).map((id) => genreIds[id]).filter(Boolean),
   voteAverage: movie.vote_average,
   popularity: movie.popularity,
+  originalLanguage: movie.original_language,
 });
 
 const genreNameToId = Object.fromEntries(Object.entries(genreIds).map(([id, name]) => [name.toLowerCase(), id]));
@@ -119,6 +125,11 @@ const mapMovieDetail = (movie: TmdbMovieDetail): Movie => ({
     .slice(0, 5)
     .map((person) => person.name),
   popularity: movie.popularity,
+  keywords: movie.keywords?.keywords?.slice(0, 12).map((keyword) => keyword.name),
+  originalLanguage: movie.original_language,
+  productionCountries: movie.production_countries?.slice(0, 3).map((country) => country.name),
+  recommendedMovieIds: movie.recommendations?.results?.slice(0, 12).map((recommendation) => recommendation.id),
+  similarMovieIds: movie.similar?.results?.slice(0, 12).map((similar) => similar.id),
 });
 
 async function tmdbFetch(path: string) {
@@ -215,7 +226,28 @@ export function posterUrl(path: string | null, size = "w500") {
 export async function getTrendingMovies(): Promise<Movie[]> {
   const data = await tmdbFetch("/trending/movie/week");
   if (!data) return fallbackMovies;
-  return data.results.map(mapMovie).filter((movie: Movie) => movie.posterPath).slice(0, 18);
+  const movies = data.results.map(mapMovie).filter((movie: Movie) => movie.posterPath).slice(0, 18);
+  return enrichMovies(movies, 10);
+}
+
+export async function getRecommendationCatalog(): Promise<Movie[]> {
+  const pages = await Promise.allSettled([
+    tmdbFetch("/movie/popular?page=1"),
+    tmdbFetch("/movie/top_rated?page=1"),
+    tmdbFetch("/movie/upcoming?page=1"),
+  ]);
+  const movies = new Map<number, Movie>();
+
+  pages.forEach((result) => {
+    if (result.status !== "fulfilled" || !result.value) return;
+    result.value.results
+      .map(mapMovie)
+      .filter((movie: Movie) => movie.posterPath)
+      .forEach((movie: Movie) => movies.set(movie.id, movie));
+  });
+
+  if (!movies.size) return fallbackMovies;
+  return enrichMovies([...movies.values()].slice(0, 45), 14);
 }
 
 export async function searchMovies(query: string): Promise<Movie[]> {
@@ -254,10 +286,11 @@ export async function searchMoviesWithDebug(query: string): Promise<SearchWithDe
       return [];
     });
     const results = rankSearchCandidates(query, candidates).filter((movie) => movie.posterPath);
+    const enrichedResults = await enrichMovies(results, 6);
 
     return {
-      movies: results,
-      debug: fastSearchDebug(results, "tmdb", "tmdb-keyword", "Fast TMDB title and person search without semantic ranking"),
+      movies: enrichedResults,
+      debug: fastSearchDebug(enrichedResults, "tmdb", "tmdb-keyword", "Fast TMDB title and person search without semantic ranking"),
     };
   } catch {
     return searchMoviesWithDebugFromFallback(query);
@@ -424,9 +457,21 @@ export async function askBetterBoxd(query: string): Promise<AskBetterBoxdResult>
 }
 
 export async function getMovieDetails(movie: Movie): Promise<Movie> {
-  const data = await tmdbFetch(`/movie/${movie.id}?append_to_response=credits`);
+  const data = await tmdbFetch(`/movie/${movie.id}?append_to_response=credits,keywords,recommendations,similar`);
   if (!data) return fallbackMovies.find((fallback) => fallback.id === movie.id) || movie;
   return mapMovieDetail(data);
+}
+
+async function enrichMovies(movies: Movie[], limit: number) {
+  if (!apiKey) return movies;
+  const enriched = await Promise.allSettled(movies.slice(0, limit).map(getMovieDetails));
+  const enrichedById = new Map<number, Movie>();
+
+  enriched.forEach((result) => {
+    if (result.status === "fulfilled") enrichedById.set(result.value.id, result.value);
+  });
+
+  return movies.map((movie) => enrichedById.get(movie.id) || movie);
 }
 
 export function hasTmdbKey() {
