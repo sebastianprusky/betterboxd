@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AccountHub, SocialProfile } from "./components/AccountHub";
+import { CreatorAccountOverview } from "./components/CreatorAccountOverview";
 import { fallbackMovies, genreIds } from "./data/fallbackMovies";
 import { getTopTasteLabel, recommendMovies, type RecommendationResult } from "./services/recommendations";
 import {
@@ -63,6 +64,12 @@ const developerModeKey = "betterboxd-developer-mode";
 const stateMetadataKey = "betterboxd-state-metadata";
 const guestMergeKeyKey = "betterboxd-guest-merge-key";
 const sprintRefillThreshold = 6;
+
+function isCreatorOverviewRoute() {
+  if (typeof window === "undefined") return false;
+  const params = new URLSearchParams(window.location.search);
+  return window.location.pathname === "/creator" || params.get("creator") === "accounts";
+}
 
 const initialRatings: RatingMap = {
   "496243": 4.5,
@@ -176,6 +183,7 @@ function App() {
   const [recommendationEvents, setRecommendationEvents] = useState<RecommendationEvent[]>(() =>
     readJson(recommendationEventsKey, [])
   );
+  const [creatorOverviewRoute] = useState(isCreatorOverviewRoute);
   const [session, setSession] = useState<AuthSession | null>(null);
   const [accountProfile, setAccountProfile] = useState<UserProfile | null | undefined>(undefined);
   const [passwordRecoveryActive, setPasswordRecoveryActive] = useState(false);
@@ -945,7 +953,14 @@ function App() {
           </div>
         </header>
 
-        {tab === "discover" && (
+        {creatorOverviewRoute && (
+          <CreatorAccountOverview
+            session={session}
+            onOpenSettings={() => setAccountSettingsOpen(true)}
+          />
+        )}
+
+        {!creatorOverviewRoute && tab === "discover" && (
           <section className="screen">
             <div className="discover-focus">
               <section className="sprint focus-sprint">
@@ -1045,7 +1060,7 @@ function App() {
           </section>
         )}
 
-        {tab === "search" && (
+        {!creatorOverviewRoute && tab === "search" && (
           <section className="screen">
             <div className={`search-shell ${searchMode === "ask" ? "is-ask-mode" : ""}`}>
               <label className="field">
@@ -1086,7 +1101,7 @@ function App() {
           </section>
         )}
 
-        {tab === "profile" && (
+        {!creatorOverviewRoute && tab === "profile" && (
           <section className="screen">
             <SocialProfile
               session={session}
@@ -1248,16 +1263,20 @@ function App() {
         )}
       </main>
 
-      <nav className="bottom-nav">
-        {navButton("discover", "Discover")}
-        {navButton("search", "Search")}
-        {navButton("profile", "Friends")}
-      </nav>
+      {!creatorOverviewRoute && (
+        <>
+          <nav className="bottom-nav">
+            {navButton("discover", "Discover")}
+            {navButton("search", "Search")}
+            {navButton("profile", "Friends")}
+          </nav>
 
-      <button className="floating-add" onClick={() => setQuickAddOpen(true)}>
-        <span className="plus-icon" aria-hidden="true" />
-        <span className="sr-only">Quick add watched movie</span>
-      </button>
+          <button className="floating-add" onClick={() => setQuickAddOpen(true)}>
+            <span className="plus-icon" aria-hidden="true" />
+            <span className="sr-only">Quick add watched movie</span>
+          </button>
+        </>
+      )}
 
       {quickAddOpen && (
         <div className="modal-backdrop" role="presentation" onMouseDown={() => setQuickAddOpen(false)}>

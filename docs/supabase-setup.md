@@ -32,6 +32,17 @@ https://betterboxd-sebastian-a6gp1ld08-sebastian-pruskys-projects.vercel.app
 
 The app passes the current deployed origin for password recovery redirects. Add each production and preview origin that should accept Supabase auth callbacks.
 
+## Creator Account Overview
+
+The private account overview is served through `/api/creator-account-overview` and should only be deployed with server-only environment variables:
+
+```text
+SUPABASE_SERVICE_ROLE_KEY=server_only_service_role_key
+BETTERBOXD_CREATOR_USER_ID=creator_supabase_auth_user_id
+```
+
+Do not prefix the service-role key with `VITE_`. The browser dashboard sends the current Supabase session token to the API; the API verifies that token belongs to the creator user id before using the service-role key server-side. The response intentionally omits email, passwords, reset links, secrets, and private movie data. It only returns aggregate counts and minimal profile identity/activity counts.
+
 ## Auth and Public Identity
 
 The app uses Supabase email/password auth. After the first authenticated session, the user must claim a unique lowercase username before profile provisioning and local-data merge. Email remains in Supabase Auth and is never stored in `public.profiles` or returned by social search.

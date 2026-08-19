@@ -1,5 +1,6 @@
 import { defineConfig, loadEnv, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
+import { handleCreatorAccountOverviewRequest } from "./api/creator-account-overview";
 import { handleSemanticSearchRequest } from "./api/semantic-search";
 
 declare const process: { env: Record<string, string | undefined> };
@@ -40,9 +41,17 @@ function semanticSearchApi(): Plugin {
     name: "betterboxd-semantic-search-api",
     config(_, { mode }) {
       const env = loadEnv(mode, ".", "");
-      if (env.OPENAI_API_KEY && !process.env.OPENAI_API_KEY) {
-        process.env.OPENAI_API_KEY = env.OPENAI_API_KEY;
-      }
+      [
+        "OPENAI_API_KEY",
+        "SUPABASE_URL",
+        "SUPABASE_ANON_KEY",
+        "SUPABASE_SERVICE_ROLE_KEY",
+        "BETTERBOXD_CREATOR_USER_ID",
+        "VITE_SUPABASE_URL",
+        "VITE_SUPABASE_ANON_KEY",
+      ].forEach((key) => {
+        if (env[key] && !process.env[key]) process.env[key] = env[key];
+      });
     },
     configureServer(server) {
       server.middlewares.use("/api/semantic-search", async (request, response) => {
@@ -54,6 +63,14 @@ function semanticSearchApi(): Plugin {
           body,
         });
         await writeFetchResponse(await handleSemanticSearchRequest(fetchRequest), response as NodeResponse);
+      });
+      server.middlewares.use("/api/creator-account-overview", async (request, response) => {
+        const nodeRequest = request as NodeRequest;
+        const fetchRequest = new Request(`http://localhost${nodeRequest.url || "/api/creator-account-overview"}`, {
+          method: nodeRequest.method,
+          headers: nodeRequest.headers as HeadersInit,
+        });
+        await writeFetchResponse(await handleCreatorAccountOverviewRequest(fetchRequest), response as NodeResponse);
       });
     },
   };

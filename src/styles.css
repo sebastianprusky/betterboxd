@@ -1492,6 +1492,119 @@ button.poster:hover,
   font-size: 1.45rem;
 }
 
+.creator-overview {
+  max-width: 1160px;
+  margin: 0 auto;
+}
+
+.creator-overview-head,
+.creator-overview-actions,
+.creator-identity-cell,
+.creator-activity-summary {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.creator-overview-head {
+  justify-content: space-between;
+}
+
+.creator-overview-head h1 {
+  margin: 0;
+  font-size: clamp(2.2rem, 6vw, 5rem);
+  line-height: 0.9;
+  letter-spacing: -0.05em;
+}
+
+.creator-overview-actions button,
+.creator-access-card button {
+  min-height: 42px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 0 14px;
+  background: var(--surface);
+  color: var(--text);
+  font-weight: 900;
+}
+
+.creator-overview-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.creator-access-card,
+.creator-account-list {
+  padding: 18px;
+}
+
+.creator-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.creator-table-wrap {
+  overflow-x: auto;
+}
+
+.creator-table {
+  width: 100%;
+  min-width: 760px;
+  border-collapse: collapse;
+}
+
+.creator-table th,
+.creator-table td {
+  border-bottom: 1px solid var(--line);
+  padding: 12px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.creator-table th {
+  color: var(--muted);
+  font-size: 0.78rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.creator-identity-cell img,
+.creator-identity-cell > span {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: var(--surface-soft);
+  color: var(--text);
+  font-weight: 950;
+  object-fit: cover;
+}
+
+.creator-identity-cell small {
+  display: block;
+  color: var(--muted);
+}
+
+.creator-activity-summary {
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.creator-activity-summary span {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 4px 8px;
+  background: var(--surface-soft);
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 850;
+  white-space: nowrap;
+}
+
 .bottom-nav {
   display: none;
 }
@@ -1791,6 +1904,15 @@ button.poster:hover,
 
   .feedback-panel {
     grid-template-columns: 1fr;
+  }
+
+  .creator-overview-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .creator-stat-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .social-columns,
