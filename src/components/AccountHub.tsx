@@ -149,16 +149,55 @@ export function AccountHub({
     window.history.replaceState({}, document.title, url.pathname + url.search);
   }
 
+  function authErrorText(error: unknown) {
+    if (!error || typeof error !== "object") return "";
+    const details = error as { message?: unknown; code?: unknown; status?: unknown; name?: unknown };
+    return [details.message, details.code, details.status, details.name]
+      .filter((value) => value !== undefined && value !== null)
+      .join(" ")
+      .toLowerCase();
+  }
+
+  function isRateLimited(message: string) {
+    return message.includes("rate limit") || message.includes("too many") || message.includes("429");
+  }
+
+  function isEmailDeliveryBlocked(message: string) {
+    return (
+      message.includes("email address not authorized") ||
+      message.includes("email not authorized") ||
+      message.includes("not authorized") ||
+      message.includes("smtp") ||
+      message.includes("email provider") ||
+      message.includes("mail")
+    );
+  }
+
   function normalizeAuthError(error: unknown, mode: AuthMode) {
-    const message = error instanceof Error ? error.message.toLowerCase() : "";
+    const message = authErrorText(error);
     if (mode === "create") {
       if (message.includes("already") || message.includes("registered")) {
         return "Account may already exist. Reset your password instead.";
       }
+      if (isRateLimited(message)) {
+        return "Too many confirmation emails were requested. Wait a bit and try again.";
+      }
+      if (isEmailDeliveryBlocked(message)) {
+        return "BetterBoxd cannot send confirmation emails right now. Try again later.";
+      }
+      if (message.includes("signup") && message.includes("disabled")) {
+        return "New account creation is temporarily unavailable.";
+      }
       return "Could not create account. Check your email and password.";
     }
     if (mode === "reset") {
-      return "Could not send reset email. Check the address and try again.";
+      if (isRateLimited(message)) {
+        return "Too many reset emails were requested. Wait a bit and try again.";
+      }
+      if (isEmailDeliveryBlocked(message)) {
+        return "BetterBoxd cannot send reset emails right now. Try again later.";
+      }
+      return "If an account exists, a reset link could not be sent right now.";
     }
     if (mode === "setPassword") {
       return "Could not update the password. Open the latest reset link and try again.";
