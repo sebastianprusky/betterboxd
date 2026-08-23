@@ -1,14 +1,19 @@
 import type { CloudUserState, Movie, RecommendationEvent } from "../types";
 
 export const emptyCloudState: CloudUserState = {
-  version: 2,
+  version: 3,
   ratings: {},
   watchlist: {},
   watched: {},
   interest: {},
   reviews: {},
-  preferences: { genres: [], directors: [], favoriteMovies: {} },
+  preferences: { genres: [], directors: [], actors: [], favoriteMovies: {} },
   recommendationEvents: [],
+  reviewInsights: {},
+  reviewAnalysisConsent: false,
+  pickIntents: [],
+  learningEvents: [],
+  tasteSprintDecisions: 0,
   fieldUpdatedAt: {},
   stateUpdatedAt: 0,
 };
@@ -78,7 +83,7 @@ export function mergeGuestAndAccountState(
   const stateUpdatedAt = Math.max(account.stateUpdatedAt || 0, guest.stateUpdatedAt || 0, Date.now());
 
   return {
-    version: 2,
+    version: 3,
     ratings: ratings.merged,
     reviews: reviews.merged,
     interest: interest.merged,
@@ -87,9 +92,19 @@ export function mergeGuestAndAccountState(
     preferences: {
       genres: [...new Set([...(account.preferences?.genres || []), ...(guest.preferences?.genres || [])])],
       directors: [...new Set([...(account.preferences?.directors || []), ...(guest.preferences?.directors || [])])],
+      actors: [...new Set([...(account.preferences?.actors || []), ...(guest.preferences?.actors || [])])],
       favoriteMovies: unionMovies(account.preferences?.favoriteMovies || {}, guest.preferences?.favoriteMovies || {}),
     },
     recommendationEvents: mergeEvents(account.recommendationEvents || [], guest.recommendationEvents || []),
+    reviewInsights: { ...(account.reviewInsights || {}), ...(guest.reviewInsights || {}) },
+    reviewAnalysisConsent: guest.reviewAnalysisConsent ?? account.reviewAnalysisConsent ?? false,
+    pickIntents: [...(account.pickIntents || []), ...(guest.pickIntents || [])]
+      .sort((a, b) => a.createdAt - b.createdAt)
+      .slice(-100),
+    learningEvents: [...(account.learningEvents || []), ...(guest.learningEvents || [])]
+      .sort((a, b) => a.createdAt - b.createdAt)
+      .slice(-100),
+    tasteSprintDecisions: Math.max(account.tasteSprintDecisions || 0, guest.tasteSprintDecisions || 0),
     fieldUpdatedAt: {
       ...(account.fieldUpdatedAt || {}),
       ...(guest.fieldUpdatedAt || {}),

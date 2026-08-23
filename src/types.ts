@@ -1,12 +1,8 @@
-export type Tab = "discover" | "search" | "profile";
-
+export type Tab = "pick" | "taste" | "library";
 export type Theme = "light" | "dark";
-
-export type ProfileSort = "recentlyWatched" | "highestRated" | "lowestRated" | "recentlyReleased";
-
 export type InterestValue = "interested" | "maybe" | "notInterested";
-
 export type RecommendationMode = "focused" | "balanced" | "exploratory";
+export type LibraryFilter = "all" | "watched" | "watchlist" | "rated" | "rejected";
 
 export type Movie = {
   id: number;
@@ -28,6 +24,24 @@ export type Movie = {
   recommendedMovieIds?: number[];
 };
 
+export type StreamingProvider = { id: number; name: string; logoPath?: string | null };
+export type StreamingAvailability = {
+  movieId: number;
+  region: string;
+  providers: StreamingProvider[];
+  link?: string;
+  checkedAt: number;
+};
+
+export type PickFilters = {
+  mood: string;
+  runtime: string;
+  genre: string;
+  era: string;
+  region: string;
+  providerIds: number[];
+};
+
 export type MovieDebugInfo = {
   status: string;
   mode: string;
@@ -35,39 +49,51 @@ export type MovieDebugInfo = {
   score?: number;
   strongestSignals: string[];
 };
-
 export type MovieDebugMap = Record<number, MovieDebugInfo>;
-
-export type AskFilter = {
-  label: string;
-  value: string;
-};
-
-export type AskPickAMovieResult = {
-  movies: Movie[];
-  debug: MovieDebugMap;
-  filters: AskFilter[];
-  explanation: string;
-};
+export type AskFilter = { label: string; value: string };
+export type AskPickAMovieResult = { movies: Movie[]; debug: MovieDebugMap; filters: AskFilter[]; explanation: string };
 
 export type RatingMap = Record<string, number>;
-
 export type WatchlistMap = Record<string, Movie>;
-
 export type WatchedMap = Record<string, { movie: Movie; watchedAt: number }>;
-
 export type InterestMap = Record<string, { movie: Movie; value: InterestValue; updatedAt: number }>;
-
 export type ReviewMap = Record<string, string>;
+
+export type ReviewAspect = {
+  id: string;
+  label: string;
+  sentiment: "positive" | "negative";
+  confidence: number;
+  createdAt: number;
+};
+export type ReviewInsightMap = Record<string, ReviewAspect[]>;
 
 export type OnboardingPreferences = {
   genres: string[];
   directors: string[];
+  actors: string[];
   favoriteMovies: Record<string, Movie>;
 };
 
-export type RecommendationEventType = "impression" | "open" | "watchlist" | "highRating" | "rating";
+export type PickIntentEvent = { id: string; movie: Movie; createdAt: number };
+export type LearningEventType = "interest" | "rating" | "watchlist" | "watched" | "pick" | "reviewAspect";
+export type LearningEvent = {
+  id: string;
+  type: LearningEventType;
+  movie: Movie;
+  label: string;
+  createdAt: number;
+  undoKey?: string;
+};
 
+export type RecommendationEventType =
+  | "impression"
+  | "open"
+  | "watchlist"
+  | "highRating"
+  | "rating"
+  | "pick"
+  | "notForMe";
 export type RecommendationEvent = {
   id: string;
   type: RecommendationEventType;
@@ -79,18 +105,24 @@ export type RecommendationEvent = {
 };
 
 export type CloudUserState = {
-  version?: 2;
+  version?: 2 | 3;
   ratings: RatingMap;
   watchlist: WatchlistMap;
   watched: WatchedMap;
   interest: InterestMap;
   reviews: ReviewMap;
+  reviewInsights?: ReviewInsightMap;
+  reviewAnalysisConsent?: boolean;
   preferences: OnboardingPreferences;
   recommendationEvents: RecommendationEvent[];
+  pickIntents?: PickIntentEvent[];
+  learningEvents?: LearningEvent[];
+  tasteSprintDecisions?: number;
   fieldUpdatedAt?: Record<string, number>;
   stateUpdatedAt?: number;
 };
 
+// Retained for database and archived-social compatibility; the new UI does not expose social profiles.
 export type UserProfile = {
   userId: string;
   username: string;
@@ -100,9 +132,7 @@ export type UserProfile = {
   createdAt: string;
   updatedAt: string;
 };
-
 export type FriendRequestStatus = "pending" | "accepted" | "declined" | "cancelled";
-
 export type FriendRequest = {
   id: string;
   requesterId: string;
@@ -113,9 +143,4 @@ export type FriendRequest = {
   otherProfile?: UserProfile;
   direction: "incoming" | "outgoing";
 };
-
-export type Friendship = {
-  friendUserId: string;
-  createdAt: string;
-  profile: UserProfile;
-};
+export type Friendship = { friendUserId: string; createdAt: string; profile: UserProfile };

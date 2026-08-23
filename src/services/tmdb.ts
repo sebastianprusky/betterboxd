@@ -1,9 +1,20 @@
 import { fallbackMovies, genreIds } from "../data/fallbackMovies";
-import type { AskPickAMovieResult, AskFilter, Movie, MovieDebugInfo, MovieDebugMap } from "../types";
+import type {
+  AskPickAMovieResult,
+  AskFilter,
+  Movie,
+  MovieDebugInfo,
+  MovieDebugMap,
+  PickFilters,
+  StreamingAvailability,
+  StreamingProvider,
+} from "../types";
 import { localSemanticSearchWithDebug, searchMoviesSemantically, type SearchWithDebugResult } from "./semanticSearch";
 
 const apiKey = import.meta.env.VITE_TMDB_API_KEY as string | undefined;
 const apiBase = "https://api.themoviedb.org/3";
+const providerCacheKey = "pickamovie-provider-cache-v1";
+const providerCacheTtl = 6 * 60 * 60 * 1000;
 
 type TmdbMovie = {
   id: number;
@@ -140,6 +151,18 @@ async function tmdbFetch(path: string) {
   return response.json();
 }
 
+function readProviderCache() {
+  try {
+    return JSON.parse(localStorage.getItem(providerCacheKey) || "{}") as Record<string, StreamingAvailability>;
+  } catch {
+    return {};
+  }
+}
+
+function writeProviderCache(cache: Record<string, StreamingAvailability>) {
+  try { localStorage.setItem(providerCacheKey, JSON.stringify(cache)); } catch { /* cache is optional */ }
+}
+
 function dedupeMovies(movies: Movie[]) {
   const seen = new Set<number>();
   return movies.filter((movie) => {
@@ -248,6 +271,125 @@ export async function getRecommendationCatalog(): Promise<Movie[]> {
 
   if (!movies.size) return fallbackMovies;
   return enrichMovies([...movies.values()].slice(0, 45), 14);
+}
+
+export async function getMovieWatchProviders(movieId: number, region: string): Promise<StreamingAvailability> {
+  const normalizedRegion = region.toUpperCase();
+  const cache = readProviderCache();
+  const key = `${movieId}:${normalizedRegion}`;
+  const cached = cache[key];
+  if (cached && Date.now() - cached.checkedAt < providerCacheTtl) return cached;
+  const data = await tmdbFetch(`/movie/${movieId}/watch/providers`);
+  const country = data?.results?.[normalizedRegion];
+  const availability: StreamingAvailability = {
+    movieId,
+    region: normalizedRegion,
+    providers: (country?.flatrate || []).map((provider: { provider_id: number; provider_name: string; logo_path?: string }) => ({
+      id: provider.provider_id,
+      name: provider.provider_name,
+      logoPath: provider.logo_path,
+    })),
+    link: country?.link,
+    checkedAt: Date.now(),
+  };
+  cache[key] = availability;
+  writeProviderCache(cache);
+  return availability;
+}
+
+export async function getStreamingProviders(region: string): Promise<StreamingProvider[]> {
+  const data = await tmdbFetch(`/watch/providers/movie?watch_region=${encodeURIComponent(region.toUpperCase())}&language=en-US`);
+  if (!data?.results) {
+    return [
+      { id: 8, name: "Netflix" },
+      { id: 1899, name: "HBO Max" },
+      { id: 9, name: "Amazon Prime Video" },
+      { id: 337, name: "Disney Plus" },
+      { id: 15, name: "Hulu" },
+      { id: 350, name: "Apple TV Plus" },
+    ];
+  }
+  return data.results
+    .map((provider: { provider_id: number; provider_name: string; logo_path?: string; display_priority?: number }) => ({
+      id: provider.provider_id,
+      name: provider.provider_name,
+      logoPath: provider.logo_path,
+      priority: provider.display_priority || 999,
+    }))
+    .sort((a: StreamingProvider & { priority: number }, b: StreamingProvider & { priority: number }) => a.priority - b.priority)
+    .slice(0, 24)
+    .map(({ id, name, logoPath }: StreamingProvider & { priority: number }) => ({ id, name, logoPath }));
+}
+
+export async function discoverPickMovies(filters: PickFilters): Promise<Movie[]> {
+  if (!apiKey) {
+    return fallbackMovies.filter((movie) => matchesLocalFilters(movie, filters));
+  }
+  const params = new URLSearchParams({
+    include_adult: "false",
+    include_video: "false",
+    sort_by: "popularity.desc",
+    "vote_count.gte": "40",
+    page: "1",
+  });
+  if (filters.genre) {
+    const genreId = genreNameToId[filters.genre.toLowerCase()];
+    if (genreId) params.set("with_genres", genreId);
+  }
+  const runtimeMap: Record<string, [string, string]> = {
+    short: ["0", "100"], standard: ["80", "130"], long: ["120", "400"],
+  };
+  if (runtimeMap[filters.runtime]) {
+    params.set("with_runtime.gte", runtimeMap[filters.runtime][0]);
+    params.set("with_runtime.lte", runtimeMap[filters.runtime][1]);
+  }
+  const eraMap: Record<string, [string, string]> = {
+    recent: ["2020-01-01", "2099-12-31"], "2010s": ["2010-01-01", "2019-12-31"],
+    "2000s": ["2000-01-01", "2009-12-31"], classic: ["1900-01-01", "1999-12-31"],
+  };
+  if (eraMap[filters.era]) {
+    params.set("primary_release_date.gte", eraMap[filters.era][0]);
+    params.set("primary_release_date.lte", eraMap[filters.era][1]);
+  }
+  if (filters.providerIds.length) {
+    params.set("watch_region", filters.region);
+    params.set("with_watch_monetization_types", "flatrate");
+    params.set("with_watch_providers", filters.providerIds.join("|"));
+  }
+  const pages = await Promise.all([1, 2, 3].map((page) => {
+    const pageParams = new URLSearchParams(params);
+    pageParams.set("page", String(page));
+    return tmdbFetch(`/discover/movie?${pageParams.toString()}`);
+  }));
+  const movies = dedupeMovies(pages.flatMap((page) => page?.results || []).map(mapMovie))
+    .filter((movie) => movie.posterPath)
+    .filter((movie) => matchesMood(movie, filters.mood));
+  return enrichMovies(movies.slice(0, 48), 16);
+}
+
+function matchesLocalFilters(movie: Movie, filters: PickFilters) {
+  if (filters.genre && !movie.genres.some((genre) => genre.toLowerCase() === filters.genre.toLowerCase())) return false;
+  if (filters.runtime === "short" && (movie.runtime || 100) > 100) return false;
+  if (filters.runtime === "long" && (movie.runtime || 100) < 120) return false;
+  const year = Number(movie.year);
+  if (filters.era === "recent" && year < 2020) return false;
+  if (filters.era === "2010s" && (year < 2010 || year > 2019)) return false;
+  if (filters.era === "2000s" && (year < 2000 || year > 2009)) return false;
+  if (filters.era === "classic" && year >= 2000) return false;
+  return matchesMood(movie, filters.mood);
+}
+
+function matchesMood(movie: Movie, mood: string) {
+  if (!mood) return true;
+  const text = `${movie.overview} ${(movie.keywords || []).join(" ")} ${movie.genres.join(" ")}`.toLowerCase();
+  const terms: Record<string, string[]> = {
+    cozy: ["cozy", "family", "romance", "comedy", "friendship"],
+    tense: ["tense", "thriller", "crime", "mystery", "survival"],
+    thoughtful: ["thoughtful", "drama", "identity", "history", "moral"],
+    funny: ["comedy", "funny", "satire"],
+    strange: ["surreal", "weird", "fantasy", "science fiction", "sci-fi"],
+  };
+  return (terms[mood] || []).some((term) => text.includes(term));
 }
 
 export async function getTasteSprintMovies(page: number): Promise<{ movies: Movie[]; hasMore: boolean }> {
@@ -450,7 +592,7 @@ export async function askPickAMovie(query: string): Promise<AskPickAMovieResult>
     return {
       movies,
       debug,
-      filters: intent.filters.length ? intent.filters : [{ label: "Intent", value: "Natural language" }],
+      filters: intent.filters,
       explanation: explainAskIntent(intent, hasFuzzyIntent),
     };
   } catch {

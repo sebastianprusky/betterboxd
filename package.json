@@ -7,8 +7,9 @@
     "dev": "vite --host 0.0.0.0",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview --host 0.0.0.0",
-    "test": "npm run test:merge",
-    "test:merge": "node --experimental-strip-types scripts/verify-account-merge.mjs"
+    "test": "npm run test:merge && npm run test:recommendations",
+    "test:merge": "node --experimental-strip-types scripts/verify-account-merge.mjs",
+    "test:recommendations": "node --experimental-strip-types scripts/verify-recommendation-first.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.110.8",
