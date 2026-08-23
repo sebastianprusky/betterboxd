@@ -4,7 +4,12 @@ import type { CloudUserState, FriendRequest, Friendship, UserProfile } from "../
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string | undefined;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined;
 
-export const isSupabaseConfigured = Boolean(supabaseUrl && supabaseAnonKey);
+function isValidSupabaseConfig(url: string | undefined, key: string | undefined) {
+  if (!url || !key || url.includes("REDACTED") || key.includes("REDACTED")) return false;
+  try { return new URL(url).protocol === "https:"; } catch { return false; }
+}
+
+export const isSupabaseConfigured = isValidSupabaseConfig(supabaseUrl, supabaseAnonKey);
 export const supabase = isSupabaseConfigured
   ? createClient(supabaseUrl as string, supabaseAnonKey as string)
   : null;
@@ -100,6 +105,12 @@ export async function saveCloudState(userId: string, appState: CloudUserState) {
     app_state: appState,
     updated_at: new Date().toISOString(),
   });
+  if (error) throw error;
+}
+
+export async function deleteCloudState(userId: string) {
+  if (!supabase) return;
+  const { error } = await supabase.from("user_app_state").delete().eq("user_id", userId);
   if (error) throw error;
 }
 

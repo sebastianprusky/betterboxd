@@ -1,16 +1,30 @@
 declare const process: { env: Record<string, string | undefined> };
 
-type NodeRequest = { method?: string; body?: unknown };
+type NodeRequest = { method?: string; body?: unknown; headers?: Record<string, string | string[] | undefined> };
 type NodeResponse = { statusCode: number; setHeader: (name: string, value: string) => void; end: (body?: string) => void };
 
 function json(body: unknown, status = 200) { return Response.json(body, { status }); }
+
+const attempts = new Map<string, number[]>();
+function isRateLimited(key: string) {
+  const cutoff = Date.now() - 60_000;
+  const recent = (attempts.get(key) || []).filter((time) => time > cutoff);
+  if (recent.length >= 8) return true;
+  attempts.set(key, [...recent, Date.now()]);
+  return false;
+}
+
+function firstHeader(value: string | string[] | undefined) {
+  return Array.isArray(value) ? value[0] : value;
+}
 
 async function analyze(body: unknown) {
   const input = body && typeof body === "object" ? body as { movieTitle?: unknown; review?: unknown } : {};
   const movieTitle = typeof input.movieTitle === "string" ? input.movieTitle.trim().slice(0, 160) : "";
   const review = typeof input.review === "string" ? input.review.trim().slice(0, 4000) : "";
   if (!movieTitle || review.length < 8) return { status: 400, body: { error: "A movie and review are required" } };
-  const apiKey = process.env.OPENAI_API_KEY;
+  const configuredApiKey = process.env.OPENAI_API_KEY;
+  const apiKey = configuredApiKey && configuredApiKey.trim().length >= 20 && !configuredApiKey.includes("REDACTED") ? configuredApiKey.trim() : undefined;
   if (!apiKey) return { status: 503, body: { error: "Review analysis is not configured" } };
   const response = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
@@ -46,13 +60,22 @@ async function analyze(body: unknown) {
 
 export async function POST(request: Request) {
   try {
+    const client = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "local";
+    if (isRateLimited(client)) return json({ error: "Too many review requests" }, 429);
     const result = await analyze(await request.json());
     return json(result.body, result.status);
   } catch { return json({ error: "Invalid request" }, 400); }
 }
 
+export async function handleReviewInsightsRequest(request: Request) {
+  if (request.method !== "POST") return json({ error: "Method not allowed" }, 405);
+  return POST(request);
+}
+
 export default async function handler(request: NodeRequest, response: NodeResponse) {
   if (request.method !== "POST") { response.statusCode = 405; response.end(); return; }
+  const client = firstHeader(request.headers?.["x-forwarded-for"])?.split(",")[0]?.trim() || "local";
+  if (isRateLimited(client)) { response.statusCode = 429; response.setHeader("content-type", "application/json"); response.end(JSON.stringify({ error: "Too many review requests" })); return; }
   const result = await analyze(request.body);
   response.statusCode = result.status;
   response.setHeader("content-type", "application/json");

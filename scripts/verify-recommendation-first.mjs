@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { decayingPickWeight, getRatingSignal, isMovieExcluded } from "../src/services/recommendationPolicy.ts";
-import { parseMovieCsv } from "../src/services/csvImport.ts";
+import { parseMovieCsv, resolveMovieCsvRows, selectCsvMatch } from "../src/services/csvImport.ts";
 import { fallbackMovies } from "../src/data/fallbackMovies.ts";
 
 assert(getRatingSignal(5) > getRatingSignal(4));
@@ -23,5 +24,18 @@ assert.equal(rows[0].review, "Sharp and tense");
 assert.equal(rows[1].status, "unmatched");
 const quotedRows = parseMovieCsv(`Title,Year,Review\n"Parasite",2019,"Sharp, funny,\nand tense"`, fallbackMovies);
 assert.equal(quotedRows[0].review, "Sharp, funny,\nand tense");
+
+const resolvedRows = await resolveMovieCsvRows(rows, async (query) => query === "Unknown" ? [{ ...fallbackMovies[0], id: 999, title: "Unknown", year: "2020" }] : []);
+assert.equal(resolvedRows[1].status, "matched");
+assert.equal(resolvedRows[1].matchedMovie?.id, 999);
+const ambiguous = { ...rows[1], candidates: fallbackMovies.slice(0, 2), status: "ambiguous" };
+assert.equal(selectCsvMatch(ambiguous, fallbackMovies[1]).matchedMovie?.id, fallbackMovies[1].id);
+
+const collaborativeModel = JSON.parse(readFileSync(new URL("../public/models/movielens-small-svd64-v1.json", import.meta.url), "utf8"));
+assert.equal(collaborativeModel.dimensions, 64);
+assert(Object.keys(collaborativeModel.items).length >= 4000);
+const collaborativeItem = Object.values(collaborativeModel.items)[0];
+assert.equal(collaborativeItem.factors.length, 64);
+assert(collaborativeItem.neighbors.length > 0);
 
 console.log("recommendation-first verification passed");

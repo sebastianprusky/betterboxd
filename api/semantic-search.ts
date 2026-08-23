@@ -346,6 +346,70 @@ function writeEmbeddingCache(input: string, embedding: number[]) {
   entriesToRemove.forEach(([key]) => embeddingCache.delete(key));
 }
 
+function persistentEmbeddingConfig() {
+  const url = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !key || url.includes("REDACTED") || key.includes("REDACTED")) return null;
+  try { if (new URL(url).protocol !== "https:") return null; } catch { return null; }
+  return { url: url.replace(/\/$/, ""), key };
+}
+
+function contentHash(value: string) {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `fnv1a-${(hash >>> 0).toString(16)}`;
+}
+
+function parseVector(value: unknown) {
+  if (Array.isArray(value)) return value.filter((item): item is number => typeof item === "number");
+  if (typeof value !== "string") return [];
+  try { return JSON.parse(value) as number[]; } catch { return []; }
+}
+
+async function readPersistentMovieEmbeddings(movies: Movie[]) {
+  const config = persistentEmbeddingConfig();
+  const result = new Map<number, number[]>();
+  if (!config || !movies.length) return result;
+  try {
+    const ids = movies.map((movie) => movie.id).join(",");
+    const response = await fetch(`${config.url}/rest/v1/movie_embeddings?select=tmdb_id,embedding,embedding_model,content_hash&tmdb_id=in.(${ids})`, {
+      headers: { apikey: config.key, authorization: `Bearer ${config.key}` },
+    });
+    if (!response.ok) return result;
+    const rows = await response.json() as Array<{ tmdb_id: number; embedding: unknown; embedding_model: string; content_hash: string }>;
+    const moviesById = new Map(movies.map((movie) => [movie.id, movie]));
+    rows.forEach((row) => {
+      const movie = moviesById.get(Number(row.tmdb_id));
+      const embedding = parseVector(row.embedding);
+      if (movie && row.embedding_model === embeddingModel && row.content_hash === contentHash(movieEmbeddingText(movie)) && embedding.length) result.set(movie.id, embedding);
+    });
+  } catch { /* persistent cache is optional */ }
+  return result;
+}
+
+async function writePersistentMovieEmbeddings(items: Array<{ movie: Movie; embedding: number[] }>) {
+  const config = persistentEmbeddingConfig();
+  if (!config || !items.length) return;
+  try {
+    await fetch(`${config.url}/rest/v1/movie_embeddings?on_conflict=tmdb_id`, {
+      method: "POST",
+      headers: { apikey: config.key, authorization: `Bearer ${config.key}`, "content-type": "application/json", prefer: "resolution=merge-duplicates,return=minimal" },
+      body: JSON.stringify(items.map(({ movie, embedding }) => ({
+        tmdb_id: movie.id,
+        embedding,
+        embedding_model: embeddingModel,
+        content_hash: contentHash(movieEmbeddingText(movie)),
+        metadata: { title: movie.title, year: movie.year },
+        schema_version: 1,
+        updated_at: new Date().toISOString(),
+      }))),
+    });
+  } catch { /* persistent cache is optional */ }
+}
+
 async function createEmbeddings(input: string[], apiKey: string): Promise<EmbeddingResult> {
   const embeddings = new Array<number[] | null>(input.length).fill(null);
   const missingInputs: string[] = [];
@@ -397,7 +461,8 @@ async function createEmbeddings(input: string[], apiKey: string): Promise<Embedd
 }
 
 async function searchSemantically(body: SemanticSearchBody, context: RequestContext): Promise<SearchResult> {
-  const apiKey = process.env.OPENAI_API_KEY;
+  const configuredApiKey = process.env.OPENAI_API_KEY;
+  const apiKey = configuredApiKey && configuredApiKey.trim().length >= 20 && !configuredApiKey.includes("REDACTED") ? configuredApiKey.trim() : undefined;
   if (!apiKey) {
     return { status: 503, body: { error: "Semantic search is not configured" } };
   }
@@ -414,10 +479,17 @@ async function searchSemantically(body: SemanticSearchBody, context: RequestCont
       return { status: 200, body: { movies: [] } };
     }
 
-    const embeddingResult = await createEmbeddings([query, ...movies.map(movieEmbeddingText)], apiKey);
-    const embeddings = embeddingResult.embeddings;
-    const queryEmbedding = embeddings[0];
-    const movieEmbeddings = embeddings.slice(1);
+    const persistent = await readPersistentMovieEmbeddings(movies);
+    const missingMovies = movies.filter((movie) => !persistent.has(movie.id));
+    const embeddingResult = await createEmbeddings([query, ...missingMovies.map(movieEmbeddingText)], apiKey);
+    const queryEmbedding = embeddingResult.embeddings[0];
+    const generatedMovieEmbeddings = embeddingResult.embeddings.slice(1);
+    const generatedById = new Map(missingMovies.map((movie, index) => [movie.id, generatedMovieEmbeddings[index]]));
+    const movieEmbeddings = movies.map((movie) => persistent.get(movie.id) || generatedById.get(movie.id) || []);
+    void writePersistentMovieEmbeddings(missingMovies.flatMap((movie) => {
+      const embedding = generatedById.get(movie.id);
+      return embedding?.length ? [{ movie, embedding }] : [];
+    }));
 
     if (!queryEmbedding || movieEmbeddings.length !== movies.length) {
       throw new Error("OpenAI embedding response was incomplete");
@@ -441,8 +513,8 @@ async function searchSemantically(body: SemanticSearchBody, context: RequestCont
           model: embeddingModel,
           candidateCount: movies.length,
           remoteEmbeddingCount: embeddingResult.remoteCount,
-          cachedEmbeddingCount: embeddingResult.cachedCount,
-          reasonSource: "OpenAI embeddings ranked by cosine similarity",
+          cachedEmbeddingCount: embeddingResult.cachedCount + persistent.size,
+          reasonSource: persistent.size ? "OpenAI embeddings with persistent pgvector cache" : "OpenAI embeddings ranked by cosine similarity",
           scores: Object.fromEntries(ranked.map(({ movie, score }) => [movie.id, Number(score.toFixed(4))])),
         },
       },

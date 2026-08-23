@@ -2,6 +2,7 @@ import { defineConfig, loadEnv, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import { handleCreatorAccountOverviewRequest } from "./api/creator-account-overview";
 import { handleSemanticSearchRequest } from "./api/semantic-search";
+import { handleReviewInsightsRequest } from "./api/review-insights";
 
 declare const process: { env: Record<string, string | undefined> };
 
@@ -72,6 +73,16 @@ function semanticSearchApi(): Plugin {
           headers: nodeRequest.headers as HeadersInit,
         });
         await writeFetchResponse(await handleCreatorAccountOverviewRequest(fetchRequest), response as NodeResponse);
+      });
+      server.middlewares.use("/api/review-insights", async (request, response) => {
+        const nodeRequest = request as NodeRequest;
+        const body = nodeRequest.method === "POST" ? await readRequestBody(nodeRequest) : undefined;
+        const fetchRequest = new Request(`http://localhost${nodeRequest.url || "/api/review-insights"}`, {
+          method: nodeRequest.method,
+          headers: nodeRequest.headers as HeadersInit,
+          body,
+        });
+        await writeFetchResponse(await handleReviewInsightsRequest(fetchRequest), response as NodeResponse);
       });
     },
   };

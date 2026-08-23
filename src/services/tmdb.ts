@@ -11,7 +11,8 @@ import type {
 } from "../types";
 import { localSemanticSearchWithDebug, searchMoviesSemantically, type SearchWithDebugResult } from "./semanticSearch";
 
-const apiKey = import.meta.env.VITE_TMDB_API_KEY as string | undefined;
+const configuredApiKey = import.meta.env.VITE_TMDB_API_KEY as string | undefined;
+const apiKey = configuredApiKey && configuredApiKey.trim().length >= 20 && !configuredApiKey.includes("REDACTED") ? configuredApiKey.trim() : undefined;
 const apiBase = "https://api.themoviedb.org/3";
 const providerCacheKey = "pickamovie-provider-cache-v1";
 const providerCacheTtl = 6 * 60 * 60 * 1000;
@@ -146,9 +147,15 @@ const mapMovieDetail = (movie: TmdbMovieDetail): Movie => ({
 async function tmdbFetch(path: string) {
   if (!apiKey) return null;
   const separator = path.includes("?") ? "&" : "?";
-  const response = await fetch(`${apiBase}${path}${separator}api_key=${apiKey}`);
-  if (!response.ok) throw new Error(`TMDB request failed: ${response.status}`);
-  return response.json();
+  const controller = new AbortController();
+  const timeout = globalThis.setTimeout(() => controller.abort(), 8_000);
+  try {
+    const response = await fetch(`${apiBase}${path}${separator}api_key=${apiKey}`, { signal: controller.signal });
+    if (!response.ok) throw new Error(`TMDB request failed: ${response.status}`);
+    return response.json();
+  } finally {
+    globalThis.clearTimeout(timeout);
+  }
 }
 
 function readProviderCache() {
@@ -275,6 +282,7 @@ export async function getRecommendationCatalog(): Promise<Movie[]> {
 
 export async function getMovieWatchProviders(movieId: number, region: string): Promise<StreamingAvailability> {
   const normalizedRegion = region.toUpperCase();
+  if (!apiKey) return { movieId, region: normalizedRegion, providers: [], checkedAt: Date.now(), status: "unavailable" };
   const cache = readProviderCache();
   const key = `${movieId}:${normalizedRegion}`;
   const cached = cache[key];
@@ -291,6 +299,7 @@ export async function getMovieWatchProviders(movieId: number, region: string): P
     })),
     link: country?.link,
     checkedAt: Date.now(),
+    status: "verified",
   };
   cache[key] = availability;
   writeProviderCache(cache);
@@ -299,16 +308,7 @@ export async function getMovieWatchProviders(movieId: number, region: string): P
 
 export async function getStreamingProviders(region: string): Promise<StreamingProvider[]> {
   const data = await tmdbFetch(`/watch/providers/movie?watch_region=${encodeURIComponent(region.toUpperCase())}&language=en-US`);
-  if (!data?.results) {
-    return [
-      { id: 8, name: "Netflix" },
-      { id: 1899, name: "HBO Max" },
-      { id: 9, name: "Amazon Prime Video" },
-      { id: 337, name: "Disney Plus" },
-      { id: 15, name: "Hulu" },
-      { id: 350, name: "Apple TV Plus" },
-    ];
-  }
+  if (!data?.results) return [];
   return data.results
     .map((provider: { provider_id: number; provider_name: string; logo_path?: string; display_priority?: number }) => ({
       id: provider.provider_id,
@@ -414,7 +414,7 @@ export async function searchMoviesWithDebug(query: string): Promise<SearchWithDe
   if (!query.trim()) return { movies: [], debug: {} };
 
   if (!apiKey) {
-    const result = localSemanticSearchWithDebug(query, fallbackMovies);
+    const result = pruneLocalTitleSearch(localSemanticSearchWithDebug(query, fallbackMovies));
     return {
       ...result,
       debug: Object.fromEntries(
@@ -454,7 +454,7 @@ export async function searchMoviesWithDebug(query: string): Promise<SearchWithDe
 }
 
 function searchMoviesWithDebugFromFallback(query: string): SearchWithDebugResult {
-  const result = localSemanticSearchWithDebug(query, fallbackMovies);
+  const result = pruneLocalTitleSearch(localSemanticSearchWithDebug(query, fallbackMovies));
   return {
     ...result,
     debug: Object.fromEntries(
@@ -464,6 +464,11 @@ function searchMoviesWithDebugFromFallback(query: string): SearchWithDebugResult
       ])
     ),
   };
+}
+
+function pruneLocalTitleSearch(result: SearchWithDebugResult): SearchWithDebugResult {
+  const movies = result.movies.filter((movie) => (result.debug[movie.id]?.score || 0) >= 2.5).slice(0, 10);
+  return { movies, debug: Object.fromEntries(movies.map((movie) => [movie.id, result.debug[movie.id]])) };
 }
 
 function parseAskIntent(query: string): AskIntent {
@@ -585,7 +590,20 @@ export async function askPickAMovie(query: string): Promise<AskPickAMovieResult>
   try {
     const candidates = await discoverAskCandidates(intent);
     const hasFuzzyIntent = subjectiveTerms.some((term) => intent.semanticQuery.toLowerCase().includes(term)) || !intent.filters.length;
-    const ranked = hasFuzzyIntent ? await searchMoviesSemantically(intent.semanticQuery || trimmed, candidates) : { movies: candidates, debug: fastSearchDebug(candidates, apiKey ? "tmdb" : "local", "metadata-filter", "Structured metadata filter match") };
+    let usedSemanticRanking = false;
+    let ranked = { movies: candidates, debug: fastSearchDebug(candidates, apiKey ? "tmdb" : "local", "metadata-filter", "Structured metadata filter match") };
+    if (hasFuzzyIntent && candidates.length) {
+      try {
+        const semantic = await searchMoviesSemantically(intent.semanticQuery || trimmed, candidates);
+        if (semantic.movies.length) {
+          ranked = semantic;
+          usedSemanticRanking = true;
+        }
+      } catch {
+        const local = localSemanticSearchWithDebug(intent.semanticQuery || trimmed, candidates);
+        if (local.movies.length) ranked = local;
+      }
+    }
     const movies = ranked.movies.length ? ranked.movies : candidates;
     const debug = ranked.movies.length ? ranked.debug : fastSearchDebug(candidates, apiKey ? "tmdb" : "local", "metadata-filter", "Structured metadata filter match");
 
@@ -593,7 +611,7 @@ export async function askPickAMovie(query: string): Promise<AskPickAMovieResult>
       movies,
       debug,
       filters: intent.filters,
-      explanation: explainAskIntent(intent, hasFuzzyIntent),
+      explanation: explainAskIntent(intent, usedSemanticRanking),
     };
   } catch {
     const candidates = filterFallbackMovies(intent);

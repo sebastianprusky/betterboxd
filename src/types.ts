@@ -31,6 +31,7 @@ export type StreamingAvailability = {
   providers: StreamingProvider[];
   link?: string;
   checkedAt: number;
+  status?: "verified" | "unavailable";
 };
 
 export type PickFilters = {
@@ -84,6 +85,7 @@ export type LearningEvent = {
   label: string;
   createdAt: number;
   undoKey?: string;
+  source?: "pick" | "sprint" | "library" | "review";
 };
 
 export type RecommendationEventType =

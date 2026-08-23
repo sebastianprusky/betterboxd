@@ -9,11 +9,15 @@ type Props = {
   theme: Theme;
   syncStatus: string;
   developerMode: boolean;
+  reviewConsent: boolean;
   state: CloudUserState;
   onOpenChange: (open: boolean) => void;
   onThemeChange: (theme: Theme) => void;
   onDeveloperModeChange: (enabled: boolean) => void;
+  onReviewConsentChange: (enabled: boolean) => void;
+  onReplayTour: () => void;
   onSignOut: () => Promise<void>;
+  onDeleteCloudData: () => Promise<void>;
   onClearLocalData: () => void;
 };
 
@@ -24,6 +28,8 @@ function GearIcon() {
 export function AccountHub(props: Props) {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
+  const [confirmingClear, setConfirmingClear] = useState(false);
+  const [confirmingCloudDelete, setConfirmingCloudDelete] = useState(false);
 
   async function signIn() {
     setBusy(true);
@@ -50,8 +56,12 @@ export function AccountHub(props: Props) {
         <div className="setting-row"><div><strong>Appearance</strong><span>Choose how PickAMovie looks.</span></div><div className="segmented"><button className={props.theme === "light" ? "is-active" : ""} onClick={() => props.onThemeChange("light")}>Light</button><button className={props.theme === "dark" ? "is-active" : ""} onClick={() => props.onThemeChange("dark")}>Dark</button></div></div>
         <div className="setting-row"><div><strong>Private sync</strong><span>{props.syncStatus}</span></div>{props.session ? <button className="secondary-button" onClick={props.onSignOut}>Sign out</button> : <button className="primary-button" onClick={signIn} disabled={!props.configured || busy}>{busy ? "Opening…" : "Continue with Google"}</button>}</div>
         <div className="setting-row"><div><strong>Your data</strong><span>Download a private copy of your activity.</span></div><button className="secondary-button" onClick={exportData}>Export</button></div>
+        <details className="data-note"><summary>How your data works</summary><p>Guest activity stays in this browser. Google sign-in privately syncs your movie activity to your account. Review text is sent for analysis only when Review learning is on; PickAMovie does not learn across its users.</p></details>
+        <div className="setting-row"><div><strong>Review learning</strong><span>{props.reviewConsent ? "New private reviews can shape recommendations." : "Reviews are saved without analysis."}</span></div><label className="switch-row"><input type="checkbox" checked={props.reviewConsent} onChange={(event) => props.onReviewConsentChange(event.target.checked)} /><span>{props.reviewConsent ? "On" : "Off"}</span></label></div>
+        <div className="setting-row"><div><strong>Walkthrough</strong><span>See the three-step introduction again.</span></div><button className="secondary-button" onClick={() => { props.onOpenChange(false); props.onReplayTour(); }}>Replay</button></div>
         <details className="developer-settings"><summary>Developer options</summary><label className="check-row"><input type="checkbox" checked={props.developerMode} onChange={(event) => props.onDeveloperModeChange(event.target.checked)} /> Show recommendation diagnostics</label></details>
-        <button className="danger-text" onClick={props.onClearLocalData}>Clear data on this device</button>
+        {props.session && <div className="danger-zone">{confirmingCloudDelete ? <><p>This removes synced movie activity. Your Google sign-in remains available.</p><button className="secondary-button" onClick={() => setConfirmingCloudDelete(false)}>Cancel</button><button className="danger-button" onClick={async () => { setBusy(true); setMessage(""); try { await props.onDeleteCloudData(); } catch { setMessage("Could not delete synced activity."); } finally { setBusy(false); setConfirmingCloudDelete(false); } }} disabled={busy}>Delete synced activity</button></> : <button className="danger-text" onClick={() => setConfirmingCloudDelete(true)}>Delete synced activity</button>}</div>}
+        <div className="danger-zone">{confirmingClear ? <><p>This removes PickAMovie activity from this browser. This cannot be undone.</p><button className="secondary-button" onClick={() => setConfirmingClear(false)}>Cancel</button><button className="danger-button" onClick={props.onClearLocalData}>Clear this device</button></> : <button className="danger-text" onClick={() => setConfirmingClear(true)}>Clear data on this device</button>}</div>
         {message && <p className="inline-error">{message}</p>}
       </section>
     </div>}

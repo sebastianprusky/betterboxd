@@ -30,6 +30,7 @@ export function recommendMovies({
   pickIntents = [],
   reviewInsights = {},
   collaborativeScores,
+  collaborativeEvidence,
   mode,
   excludedIds = [],
   limit = 18,
@@ -43,6 +44,7 @@ export function recommendMovies({
   pickIntents?: PickIntentEvent[];
   reviewInsights?: ReviewInsightMap;
   collaborativeScores?: Map<number, number>;
+  collaborativeEvidence?: Map<number, string>;
   mode: RecommendationMode;
   excludedIds?: number[];
   limit?: number;
@@ -51,7 +53,13 @@ export function recommendMovies({
   const preferredGenres = new Set(preferences.genres.map(normalize));
   const preferredDirectors = new Set(preferences.directors.map(normalize));
   const preferredActors = new Set((preferences.actors || []).map(normalize));
-  const scored = movies
+  const seenMovieIds = new Set<number>();
+  const uniqueMovies = movies.filter((movie) => {
+    if (seenMovieIds.has(movie.id)) return false;
+    seenMovieIds.add(movie.id);
+    return true;
+  });
+  const scored = uniqueMovies
     .filter((movie) => !isMovieExcluded(movie.id, watched, interest, excludedIds))
     .map((movie) => {
       const taste = clamp01((cosineSimilarity(userVector, movieVector(movie)) + 1) / 2);
@@ -61,7 +69,8 @@ export function recommendMovies({
       const explicit = explicitBoost(movie, preferredGenres, preferredDirectors, preferredActors);
       const saved = Boolean(watchlist[movie.id]);
       const modelScore = collaborativeScores?.get(movie.id);
-      const collaborative = modelScore === undefined ? relationshipSignal(movie, movies, ratings) : clamp01((modelScore + 1) / 2);
+      const hasCollaborativeData = modelScore !== undefined;
+      const collaborative = hasCollaborativeData ? clamp01((modelScore + 1) / 2) : relationshipSignal(movie, movies, ratings);
       const weights = mode === "focused"
         ? { taste: 0.58, quality: 0.12, popularity: 0.05, novelty: 0.05, collaborative: 0.2 }
         : mode === "exploratory"
@@ -72,8 +81,8 @@ export function recommendMovies({
         novelty * weights.novelty + collaborative * weights.collaborative + explicit + (saved ? 0.025 : 0);
       const signals = normalizeSignals([
         { label: "Your taste", value: taste, detail: tasteDetail(movie, preferences) },
-        { label: "Similar movies", value: collaborative, detail: collaborativeDetail(movie, movies, ratings) },
-        { label: "Quality", value: quality, detail: "Audience rating and review support" },
+        { label: hasCollaborativeData ? "Audience patterns" : "Movie fit", value: collaborative, detail: hasCollaborativeData ? collaborativeEvidence?.get(movie.id) || "MovieLens item factors compared with your ratings" : collaborativeDetail(movie, movies, ratings) },
+        { label: "Quality", value: quality, detail: "TMDB audience rating" },
         { label: "Something new", value: novelty, detail: "Balances familiarity with discovery" },
       ]);
       return { movie, score, signals, reason: chooseReason(movie, signals, saved) };
@@ -129,7 +138,7 @@ function collaborativeDetail(movie: Movie, movies: Movie[], ratings: RatingMap) 
     .filter((candidate) => (ratings[candidate.id] || 0) >= 4)
     .map((candidate) => ({ candidate, overlap: affinityOverlap(movie, candidate) }))
     .sort((a, b) => b.overlap - a.overlap)[0];
-  return match?.overlap > 0 ? `Closest to ${match.candidate.title}` : "Based on nearby audience and movie patterns";
+  return match?.overlap > 0 ? `Shares movie traits with ${match.candidate.title}` : "Shared genres, people, keywords, and TMDB relationships";
 }
 
 function tasteDetail(movie: Movie, preferences: OnboardingPreferences) {
@@ -142,7 +151,7 @@ function tasteDetail(movie: Movie, preferences: OnboardingPreferences) {
 function chooseReason(movie: Movie, signals: RecommendationSignal[], saved: boolean) {
   if (saved) return "Saved earlier and especially relevant tonight.";
   const strongest = [...signals].sort((a, b) => b.value - a.value)[0];
-  if (strongest.label === "Similar movies") return strongest.detail + ".";
+  if (strongest.label === "Audience patterns" || strongest.label === "Movie fit") return strongest.detail + ".";
   if (strongest.label === "Quality" && (movie.voteAverage || 0) >= 8) return "Highly rated and close to your taste.";
   return strongest.detail + ".";
 }

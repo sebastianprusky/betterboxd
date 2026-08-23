@@ -8,7 +8,8 @@ export type CsvImportRow = {
   watched?: boolean;
   review?: string;
   matchedMovie?: Movie;
-  status: "matched" | "ambiguous" | "unmatched";
+  candidates?: Movie[];
+  status: "matched" | "ambiguous" | "unmatched" | "searching";
 };
 
 function parseCsvRecords(text: string) {
@@ -32,6 +33,41 @@ function parseCsvRecords(text: string) {
   record.push(cell.trim());
   if (record.some(Boolean)) records.push(record);
   return records;
+}
+
+export async function resolveMovieCsvRows(
+  rows: CsvImportRow[],
+  search: (query: string) => Promise<Movie[]>,
+): Promise<CsvImportRow[]> {
+  const resolved: CsvImportRow[] = [];
+  for (const row of rows) {
+    if (row.matchedMovie) { resolved.push(row); continue; }
+    try {
+      const searched = (await search(row.title)).slice(0, 8);
+      const exact = searched
+        .filter((movie) => normalized(movie.title) === normalized(row.title))
+        .filter((movie) => !row.year || movie.year === row.year)
+        .slice(0, 6);
+      const candidates = exact.length ? exact : searched.slice(0, 6);
+      resolved.push({
+        ...row,
+        candidates,
+        matchedMovie: exact.length === 1 ? exact[0] : undefined,
+        status: exact.length === 1 ? "matched" : candidates.length ? "ambiguous" : "unmatched",
+      });
+    } catch {
+      resolved.push({ ...row, candidates: [], status: "unmatched" });
+    }
+  }
+  return resolved;
+}
+
+export function selectCsvMatch(row: CsvImportRow, movie?: Movie): CsvImportRow {
+  return { ...row, matchedMovie: movie, status: movie ? "matched" : row.candidates?.length ? "ambiguous" : "unmatched" };
+}
+
+function normalized(value: string) {
+  return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 }
 
 function findColumn(headers: string[], candidates: string[]) {
