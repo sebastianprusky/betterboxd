@@ -52,7 +52,14 @@ export type MovieDebugInfo = {
 };
 export type MovieDebugMap = Record<number, MovieDebugInfo>;
 export type AskFilter = { label: string; value: string };
-export type AskPickAMovieResult = { movies: Movie[]; debug: MovieDebugMap; filters: AskFilter[]; explanation: string };
+export type AskPickAMovieResult = {
+  movies: Movie[];
+  debug: MovieDebugMap;
+  filters: AskFilter[];
+  promptScores: Record<number, number>;
+  serviceStatus: "full" | "metadata-only" | "local-fallback";
+  explanation: string;
+};
 
 export type RatingMap = Record<string, number>;
 export type WatchlistMap = Record<string, Movie>;

@@ -1,7 +1,6 @@
 import { fallbackMovies, genreIds } from "../data/fallbackMovies";
 import type {
   AskPickAMovieResult,
-  AskFilter,
   Movie,
   MovieDebugInfo,
   MovieDebugMap,
@@ -9,6 +8,14 @@ import type {
   StreamingAvailability,
   StreamingProvider,
 } from "../types";
+import {
+  matchesAskConstraints,
+  parseAskIntent,
+  shouldUseSemanticRanking,
+  type AskIntent,
+} from "./promptIntent";
+import { cosineSimilarity, embedText } from "./localEmbeddings";
+import { buildMovieProfile } from "./movieProfiles";
 import { localSemanticSearchWithDebug, searchMoviesSemantically, type SearchWithDebugResult } from "./semanticSearch";
 
 const configuredApiKey = import.meta.env.VITE_TMDB_API_KEY as string | undefined;
@@ -16,6 +23,7 @@ const apiKey = configuredApiKey && configuredApiKey.trim().length >= 20 && !conf
 const apiBase = "https://api.themoviedb.org/3";
 const providerCacheKey = "pickamovie-provider-cache-v1";
 const providerCacheTtl = 6 * 60 * 60 * 1000;
+const movieDetailCache = new Map<number, Promise<Movie>>();
 
 type TmdbMovie = {
   id: number;
@@ -36,28 +44,24 @@ type TmdbMovieDetail = TmdbMovie & {
   runtime?: number;
   genres?: Array<{ id: number; name: string }>;
   credits?: {
-    cast?: Array<{ name: string; order: number }>;
-    crew?: Array<{ name: string; job: string }>;
+    cast?: Array<{ id?: number; name: string; order: number }>;
+    crew?: Array<{ id?: number; name: string; job: string }>;
   };
   production_countries?: Array<{ name: string }>;
-  keywords?: { keywords?: Array<{ name: string }> };
+  keywords?: { keywords?: Array<{ id?: number; name: string }> };
   recommendations?: { results?: TmdbMovie[] };
   similar?: { results?: TmdbMovie[] };
-};
-
-type AskIntent = {
-  filters: AskFilter[];
-  genre?: string;
-  yearFrom?: number;
-  yearTo?: number;
-  sortBy: string;
-  semanticQuery: string;
 };
 
 type SearchCandidate = {
   movie: Movie;
   sourceRank: number;
   personMatch?: boolean;
+};
+
+type TmdbPersonCredits = {
+  cast?: Array<TmdbMovie & { character?: string }>;
+  crew?: Array<TmdbMovie & { job?: string }>;
 };
 
 const mapMovie = (movie: TmdbMovie): Movie => ({
@@ -74,53 +78,6 @@ const mapMovie = (movie: TmdbMovie): Movie => ({
 });
 
 const genreNameToId = Object.fromEntries(Object.entries(genreIds).map(([id, name]) => [name.toLowerCase(), id]));
-const genreAliases: Record<string, string> = {
-  action: "Action",
-  adventure: "Adventure",
-  animated: "Animation",
-  animation: "Animation",
-  anime: "Animation",
-  comedy: "Comedy",
-  comedies: "Comedy",
-  crime: "Crime",
-  drama: "Drama",
-  dramas: "Drama",
-  fantasy: "Fantasy",
-  historical: "History",
-  history: "History",
-  horror: "Horror",
-  scary: "Horror",
-  mystery: "Mystery",
-  mysteries: "Mystery",
-  music: "Music",
-  musical: "Music",
-  romance: "Romance",
-  romantic: "Romance",
-  "sci fi": "Sci-Fi",
-  scifi: "Sci-Fi",
-  "science fiction": "Sci-Fi",
-  thriller: "Thriller",
-  thrillers: "Thriller",
-  war: "War",
-};
-
-const subjectiveTerms = [
-  "bleak",
-  "cozy",
-  "dark",
-  "emotional",
-  "feel good",
-  "funny",
-  "gritty",
-  "haunting",
-  "mind bending",
-  "moody",
-  "slow burn",
-  "tense",
-  "thoughtful",
-  "weird",
-];
-
 const mapMovieDetail = (movie: TmdbMovieDetail): Movie => ({
   id: movie.id,
   title: movie.title || movie.name || "Untitled",
@@ -323,7 +280,7 @@ export async function getStreamingProviders(region: string): Promise<StreamingPr
 
 export async function discoverPickMovies(filters: PickFilters): Promise<Movie[]> {
   if (!apiKey) {
-    return fallbackMovies.filter((movie) => matchesLocalFilters(movie, filters));
+    return fallbackMovies.filter((movie) => matchesPickFilters(movie, filters));
   }
   const params = new URLSearchParams({
     include_adult: "false",
@@ -367,9 +324,10 @@ export async function discoverPickMovies(filters: PickFilters): Promise<Movie[]>
   return enrichMovies(movies.slice(0, 48), 16);
 }
 
-function matchesLocalFilters(movie: Movie, filters: PickFilters) {
+export function matchesPickFilters(movie: Movie, filters: PickFilters) {
   if (filters.genre && !movie.genres.some((genre) => genre.toLowerCase() === filters.genre.toLowerCase())) return false;
   if (filters.runtime === "short" && (movie.runtime || 100) > 100) return false;
+  if (filters.runtime === "standard" && ((movie.runtime || 105) < 80 || (movie.runtime || 105) > 130)) return false;
   if (filters.runtime === "long" && (movie.runtime || 100) < 120) return false;
   const year = Number(movie.year);
   if (filters.era === "recent" && year < 2020) return false;
@@ -471,78 +429,8 @@ function pruneLocalTitleSearch(result: SearchWithDebugResult): SearchWithDebugRe
   return { movies, debug: Object.fromEntries(movies.map((movie) => [movie.id, result.debug[movie.id]])) };
 }
 
-function parseAskIntent(query: string): AskIntent {
-  const normalized = query.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
-  const filters: AskFilter[] = [];
-  let genre: string | undefined;
-  let yearFrom: number | undefined;
-  let yearTo: number | undefined;
-  let sortBy = "popularity.desc";
-  const semanticTerms: string[] = [];
-
-  Object.entries(genreAliases).some(([alias, name]) => {
-    const pattern = new RegExp(`\\b${alias.replace(/\s+/g, "\\s+")}\\b`);
-    if (!pattern.test(normalized)) return false;
-    genre = name;
-    filters.push({ label: "Genre", value: name });
-    return true;
-  });
-
-  const decade = normalized.match(/\b(19|20)(\d)0s\b/);
-  if (decade) {
-    yearFrom = Number(`${decade[1]}${decade[2]}0`);
-    yearTo = yearFrom + 9;
-  }
-
-  const yearRange = normalized.match(/\b((?:19|20)\d{2})\s*(?:to|-|through)\s*((?:19|20)\d{2})\b/);
-  if (yearRange) {
-    yearFrom = Number(yearRange[1]);
-    yearTo = Number(yearRange[2]);
-  }
-
-  const afterYear = normalized.match(/\b(?:after|since|from)\s+((?:19|20)\d{2})\b/);
-  const beforeYear = normalized.match(/\b(?:before|until|pre)\s+((?:19|20)\d{2})\b/);
-  if (afterYear && !yearFrom) yearFrom = Number(afterYear[1]);
-  if (beforeYear && !yearTo) yearTo = Number(beforeYear[1]);
-
-  if (/\bnew|newer|recent|latest\b/.test(normalized)) {
-    sortBy = "primary_release_date.desc";
-    filters.push({ label: "Sort", value: "Newest first" });
-  } else if (/\bclassic|older|old\b/.test(normalized)) {
-    sortBy = "primary_release_date.asc";
-    filters.push({ label: "Sort", value: "Oldest first" });
-  } else if (/\bbest|top|highest rated|great\b/.test(normalized)) {
-    sortBy = "vote_average.desc";
-    filters.push({ label: "Sort", value: "Highest rated" });
-  }
-
-  if (yearFrom || yearTo) {
-    filters.push({ label: "Years", value: yearFrom && yearTo ? `${yearFrom}-${yearTo}` : yearFrom ? `${yearFrom}+` : `Until ${yearTo}` });
-  }
-
-  subjectiveTerms.forEach((term) => {
-    const pattern = new RegExp(`\\b${term.replace(/\s+/g, "\\s+")}\\b`);
-    if (pattern.test(normalized)) semanticTerms.push(term);
-  });
-
-  const semanticQuery = [genre, ...semanticTerms, normalized]
-    .filter(Boolean)
-    .join(" ")
-    .trim();
-
-  return { filters, genre, yearFrom, yearTo, sortBy, semanticQuery };
-}
-
 function filterFallbackMovies(intent: AskIntent) {
-  return fallbackMovies
-    .filter((movie) => !intent.genre || movie.genres.some((genre) => genre.toLowerCase() === intent.genre?.toLowerCase()))
-    .filter((movie) => {
-      const year = Number(movie.year);
-      if (!Number.isFinite(year)) return true;
-      if (intent.yearFrom && year < intent.yearFrom) return false;
-      if (intent.yearTo && year > intent.yearTo) return false;
-      return true;
-    });
+  return fallbackMovies.filter((movie) => matchesAskConstraints(movie, intent));
 }
 
 async function discoverAskCandidates(intent: AskIntent): Promise<Movie[]> {
@@ -573,45 +461,152 @@ async function discoverAskCandidates(intent: AskIntent): Promise<Movie[]> {
   return dedupeMovies(results.map(mapMovie).filter((movie: Movie) => movie.posterPath)).slice(0, 32);
 }
 
-function explainAskIntent(intent: AskIntent, usedSemanticRanking: boolean) {
-  if (!intent.filters.length && !usedSemanticRanking) {
+type AnchoredCandidates = {
+  movies: Movie[];
+  promptScores: Record<number, number>;
+  resolvedReferenceTitle?: string;
+};
+
+async function discoverAnchoredCandidates(intent: AskIntent): Promise<AnchoredCandidates> {
+  if (!apiKey || !intent.referenceTitle) return { movies: [], promptScores: {} };
+  const timingStartedAt = globalThis.performance?.now?.() || Date.now();
+  const logTiming = (stage: string) => {
+    if (import.meta.env.DEV) console.debug("[prompt-timing]", stage, Math.round((globalThis.performance?.now?.() || Date.now()) - timingStartedAt));
+  };
+
+  const search = await tmdbFetch(`/search/movie?query=${encodeURIComponent(intent.referenceTitle)}&include_adult=false&page=1`);
+  logTiming("reference-resolved");
+  const searchResults = (search?.results || []) as TmdbMovie[];
+  const normalizedReference = normalizeSearchText(intent.referenceTitle);
+  const reference = searchResults.find((movie) => normalizeSearchText(movie.title || movie.name || "") === normalizedReference)
+    || searchResults.find((movie) => normalizeSearchText(movie.title || movie.name || "").startsWith(normalizedReference))
+    || searchResults[0];
+  if (!reference) return { movies: [], promptScores: {} };
+
+  const detail = await tmdbFetch(`/movie/${reference.id}?append_to_response=credits,keywords,recommendations,similar`) as TmdbMovieDetail | null;
+  logTiming("relationships-loaded");
+  if (!detail) return { movies: [], promptScores: {}, resolvedReferenceTitle: reference.title || reference.name };
+
+  const leadActorId = [...(detail.credits?.cast || [])].sort((a, b) => a.order - b.order)[0]?.id;
+  const directorId = detail.credits?.crew?.find((person) => person.job === "Director")?.id;
+  const [leadCredits, directorCredits] = await Promise.all([
+    leadActorId ? tmdbFetch(`/person/${leadActorId}/movie_credits?language=en-US`) as Promise<TmdbPersonCredits | null> : Promise.resolve(null),
+    directorId ? tmdbFetch(`/person/${directorId}/movie_credits?language=en-US`) as Promise<TmdbPersonCredits | null> : Promise.resolve(null),
+  ]);
+  logTiming("people-credits-loaded");
+
+  const recommendationScored = ((detail.recommendations?.results || []) as TmdbMovie[]).slice(0, 12).map((movie, index) => ({ movie: mapMovie(movie), score: Math.max(0.78, 0.98 - index * 0.016) }));
+  const similarScored = ((detail.similar?.results || []) as TmdbMovie[]).slice(0, 10).map((movie, index) => ({ movie: mapMovie(movie), score: Math.max(0.74, 0.93 - index * 0.016) }));
+  const leadScored = ((leadCredits?.cast || []) as TmdbMovie[])
+      .sort((a, b) => (b.popularity || 0) - (a.popularity || 0) || (b.vote_average || 0) - (a.vote_average || 0))
+      .slice(0, 10)
+      .map((movie) => ({ movie: mapMovie(movie), score: 0.72 }));
+  const directorScored = ((directorCredits?.crew || []).filter((movie) => movie.job === "Director") as TmdbMovie[])
+      .sort((a, b) => (b.popularity || 0) - (a.popularity || 0) || (b.vote_average || 0) - (a.vote_average || 0))
+      .slice(0, 6)
+      .map((movie) => ({ movie: mapMovie(movie), score: 0.68 }));
+  const scored = [...recommendationScored, ...similarScored, ...leadScored, ...directorScored];
+  const leadMovieIds = new Set(leadScored.map(({ movie }) => movie.id));
+  const directorMovieIds = new Set(directorScored.map(({ movie }) => movie.id));
+  const scoredById = new Map<number, { movie: Movie; score: number }>();
+  scored.forEach((candidate) => {
+    const existing = scoredById.get(candidate.movie.id);
+    if (!existing || candidate.score > existing.score) scoredById.set(candidate.movie.id, candidate);
+  });
+  const related = [...scoredById.values()]
+    .filter(({ movie }) => movie.id !== reference.id && movie.posterPath && matchesAskConstraints(movie, intent))
+    .sort((a, b) => b.score - a.score || (b.movie.popularity || 0) - (a.movie.popularity || 0))
+    .slice(0, 32);
+  const enriched = related.map(({ movie }) => movie);
+  const scoreById = new Map(related.map(({ movie, score }) => [movie.id, score]));
+  const referenceMovie = mapMovieDetail(detail);
+  const referenceKeywords = new Set((referenceMovie.keywords || []).map(normalizeSearchText));
+  const referenceGenres = new Set(referenceMovie.genres.map(normalizeSearchText));
+  enriched.forEach((movie) => {
+    const base = scoreById.get(movie.id) || 0.55;
+    const sharedKeywords = (movie.keywords || []).filter((keyword) => referenceKeywords.has(normalizeSearchText(keyword))).length;
+    const sharedGenres = movie.genres.filter((genre) => referenceGenres.has(normalizeSearchText(genre))).length;
+    const sameLead = leadMovieIds.has(movie.id);
+    const sameDirector = directorMovieIds.has(movie.id);
+    const profileSimilarity = Math.max(0, cosineSimilarity(embedText(buildMovieProfile(referenceMovie)), embedText(buildMovieProfile(movie))));
+    const evidenceBoost = (sameLead ? 0.14 : 0) + (sameDirector ? 0.12 : 0) + Math.min(0.14, sharedKeywords * 0.045) + Math.min(0.06, sharedGenres * 0.03) + profileSimilarity * 0.08;
+    scoreById.set(movie.id, Math.min(1, base + evidenceBoost));
+  });
+
+  const rankedEnriched = [...enriched].sort((a, b) => (scoreById.get(b.id) || 0) - (scoreById.get(a.id) || 0));
+  return {
+    movies: rankedEnriched,
+    promptScores: Object.fromEntries(rankedEnriched.map((movie) => [movie.id, scoreById.get(movie.id) || 0.65])),
+    resolvedReferenceTitle: reference.title || reference.name,
+  };
+}
+
+function explainAskIntent(intent: AskIntent, semanticMode: "remote" | "local" | "none", resolvedReferenceTitle?: string) {
+  if (intent.referenceTitle && !apiKey) {
+    return `I recognized “similar to ${intent.referenceTitle},” but reference-title search needs TMDB. These are limited local-catalog matches.`;
+  }
+  if (intent.referenceTitle && resolvedReferenceTitle) {
+    const constraint = intent.filters.length ? ` that also match ${intent.filters.map((filter) => `${filter.label.toLowerCase()} ${filter.value}`).join(", ")}` : "";
+    return `I matched “${resolvedReferenceTitle}” and ranked related movies${constraint}.`;
+  }
+  if (intent.referenceTitle) {
+    return `I could not resolve “${intent.referenceTitle},” so these are broader metadata matches.`;
+  }
+  if (!intent.filters.length && semanticMode === "none") {
     return "I treated this as a broad movie request and used available movie metadata.";
   }
   const understood = intent.filters.length ? intent.filters.map((filter) => `${filter.label.toLowerCase()} ${filter.value}`).join(", ") : "broad movie metadata";
-  return `I understood: ${understood}. ${usedSemanticRanking ? "Fuzzy wording was used to reorder the filtered matches." : "Results use metadata filtering."}`;
+  if (semanticMode === "remote") return `I understood: ${understood}. Semantic similarity reordered the matches.`;
+  if (semanticMode === "local") return `I understood: ${understood}. Local text matching reordered the available catalog.`;
+  return `I understood: ${understood}. Results use metadata filtering.`;
 }
 
 export async function askPickAMovie(query: string): Promise<AskPickAMovieResult> {
   const trimmed = query.trim();
-  if (!trimmed) return { movies: [], debug: {}, filters: [], explanation: "Ask for a genre, mood, era, or other movie request." };
+  if (!trimmed) return { movies: [], debug: {}, filters: [], promptScores: {}, serviceStatus: "metadata-only", explanation: "Ask for a genre, mood, era, or other movie request." };
 
   const intent = parseAskIntent(trimmed);
 
   try {
-    const candidates = await discoverAskCandidates(intent);
-    const hasFuzzyIntent = subjectiveTerms.some((term) => intent.semanticQuery.toLowerCase().includes(term)) || !intent.filters.length;
-    let usedSemanticRanking = false;
+    const anchored = await discoverAnchoredCandidates(intent);
+    const discovered = anchored.movies.length ? [] : await discoverAskCandidates(intent);
+    const candidates = dedupeMovies([...anchored.movies, ...discovered]).slice(0, 32);
+    let semanticMode: "remote" | "local" | "none" = "none";
+    const promptScores: Record<number, number> = { ...anchored.promptScores };
     let ranked = { movies: candidates, debug: fastSearchDebug(candidates, apiKey ? "tmdb" : "local", "metadata-filter", "Structured metadata filter match") };
-    if (hasFuzzyIntent && candidates.length) {
+    if (shouldUseSemanticRanking(intent) && candidates.length) {
       try {
         const semantic = await searchMoviesSemantically(intent.semanticQuery || trimmed, candidates);
         if (semantic.movies.length) {
           ranked = semantic;
-          usedSemanticRanking = true;
+          semanticMode = Object.values(semantic.debug).some((debug) => debug.status === "openai") ? "remote" : "local";
         }
       } catch {
         const local = localSemanticSearchWithDebug(intent.semanticQuery || trimmed, candidates);
-        if (local.movies.length) ranked = local;
+        if (local.movies.length) {
+          ranked = local;
+          semanticMode = "local";
+        }
       }
     }
-    const movies = ranked.movies.length ? ranked.movies : candidates;
+    const movies = ranked.movies.length
+      ? dedupeMovies([...ranked.movies, ...anchored.movies]).slice(0, 32)
+      : candidates;
     const debug = ranked.movies.length ? ranked.debug : fastSearchDebug(candidates, apiKey ? "tmdb" : "local", "metadata-filter", "Structured metadata filter match");
+    movies.forEach((movie, index) => {
+      const semanticScore = debug[movie.id]?.score;
+      const normalizedSemanticScore = typeof semanticScore === "number" && semanticMode === "remote" ? Math.max(0, Math.min(1, (semanticScore + 1) / 2)) : 0;
+      const rankScore = Math.max(0.35, 0.78 - index * 0.018);
+      promptScores[movie.id] = Math.max(promptScores[movie.id] || 0, normalizedSemanticScore, rankScore);
+    });
 
     return {
       movies,
       debug,
       filters: intent.filters,
-      explanation: explainAskIntent(intent, usedSemanticRanking),
+      promptScores,
+      serviceStatus: !apiKey ? "local-fallback" : semanticMode === "remote" ? "full" : "metadata-only",
+      explanation: explainAskIntent(intent, semanticMode, anchored.resolvedReferenceTitle),
     };
   } catch {
     const candidates = filterFallbackMovies(intent);
@@ -625,15 +620,26 @@ export async function askPickAMovie(query: string): Promise<AskPickAMovieResult>
         ])
       ),
       filters: intent.filters.length ? intent.filters : [{ label: "Fallback", value: "Local matching" }],
-      explanation: "I used local movie data because the richer search path was unavailable.",
+      promptScores: Object.fromEntries(ranked.movies.map((movie, index) => [movie.id, Math.max(0.35, 0.75 - index * 0.025)])),
+      serviceStatus: "local-fallback",
+      explanation: intent.referenceTitle
+        ? `I recognized “similar to ${intent.referenceTitle},” but richer reference search was unavailable. These are limited local-catalog matches.`
+        : "I used local movie data because the richer search path was unavailable.",
     };
   }
 }
 
 export async function getMovieDetails(movie: Movie): Promise<Movie> {
-  const data = await tmdbFetch(`/movie/${movie.id}?append_to_response=credits,keywords,recommendations,similar`);
-  if (!data) return fallbackMovies.find((fallback) => fallback.id === movie.id) || movie;
-  return mapMovieDetail(data);
+  const cached = movieDetailCache.get(movie.id);
+  if (cached) return cached;
+  const request = tmdbFetch(`/movie/${movie.id}?append_to_response=credits,keywords,recommendations,similar`)
+    .then((data) => data ? mapMovieDetail(data) : fallbackMovies.find((fallback) => fallback.id === movie.id) || movie)
+    .catch((error) => {
+      movieDetailCache.delete(movie.id);
+      throw error;
+    });
+  movieDetailCache.set(movie.id, request);
+  return request;
 }
 
 async function enrichMovies(movies: Movie[], limit: number) {

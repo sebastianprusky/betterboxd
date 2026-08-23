@@ -7,9 +7,10 @@
     "dev": "vite --host 0.0.0.0",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview --host 0.0.0.0",
-    "test": "npm run test:merge && npm run test:recommendations",
+    "test": "npm run test:merge && npm run test:recommendations && npm run test:prompts",
     "test:merge": "node --experimental-strip-types scripts/verify-account-merge.mjs",
-    "test:recommendations": "node --experimental-strip-types scripts/verify-recommendation-first.mjs"
+    "test:recommendations": "node --experimental-strip-types scripts/verify-recommendation-first.mjs",
+    "test:prompts": "node --experimental-strip-types scripts/verify-prompt-retrieval.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.110.8",

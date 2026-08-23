@@ -1,6 +1,7 @@
 import { buildMovieProfile } from "./movieProfiles";
 import { addWeightedEmbedding, cosineSimilarity, embedText, embeddingMagnitude, emptyEmbedding } from "./localEmbeddings";
 import { decayingPickWeight, getRatingSignal, isMovieExcluded } from "./recommendationPolicy";
+import { blendPromptRelevance } from "./promptIntent";
 import type {
   InterestMap,
   Movie,
@@ -29,6 +30,7 @@ export function recommendMovies({
   preferences,
   pickIntents = [],
   reviewInsights = {},
+  promptScores = {},
   collaborativeScores,
   collaborativeEvidence,
   mode,
@@ -43,6 +45,7 @@ export function recommendMovies({
   preferences: OnboardingPreferences;
   pickIntents?: PickIntentEvent[];
   reviewInsights?: ReviewInsightMap;
+  promptScores?: Record<number, number>;
   collaborativeScores?: Map<number, number>;
   collaborativeEvidence?: Map<number, string>;
   mode: RecommendationMode;
@@ -71,15 +74,18 @@ export function recommendMovies({
       const modelScore = collaborativeScores?.get(movie.id);
       const hasCollaborativeData = modelScore !== undefined;
       const collaborative = hasCollaborativeData ? clamp01((modelScore + 1) / 2) : relationshipSignal(movie, movies, ratings);
+      const promptRelevance = promptScores[movie.id];
       const weights = mode === "focused"
         ? { taste: 0.58, quality: 0.12, popularity: 0.05, novelty: 0.05, collaborative: 0.2 }
         : mode === "exploratory"
           ? { taste: 0.36, quality: 0.14, popularity: 0.08, novelty: 0.24, collaborative: 0.18 }
           : { taste: 0.48, quality: 0.14, popularity: 0.07, novelty: 0.12, collaborative: 0.19 };
-      const score =
+      const baseScore =
         taste * weights.taste + quality * weights.quality + popularity * weights.popularity +
         novelty * weights.novelty + collaborative * weights.collaborative + explicit + (saved ? 0.025 : 0);
+      const score = blendPromptRelevance(baseScore, promptRelevance);
       const signals = normalizeSignals([
+        ...(promptRelevance === undefined ? [] : [{ label: "Your request", value: clamp01(promptRelevance), detail: "Directly matches the request you entered" }]),
         { label: "Your taste", value: taste, detail: tasteDetail(movie, preferences) },
         { label: hasCollaborativeData ? "Audience patterns" : "Movie fit", value: collaborative, detail: hasCollaborativeData ? collaborativeEvidence?.get(movie.id) || "MovieLens item factors compared with your ratings" : collaborativeDetail(movie, movies, ratings) },
         { label: "Quality", value: quality, detail: "TMDB audience rating" },
@@ -89,7 +95,7 @@ export function recommendMovies({
     })
     .sort((a, b) => b.score - a.score);
 
-  return diversityRerank(scored, mode, limit);
+  return diversityRerank(scored, mode, limit, Object.keys(promptScores).length > 0);
 }
 
 function buildUserVector({ movies, ratings, watchlist, interest, preferences, pickIntents, reviewInsights }: {
@@ -169,10 +175,11 @@ function noveltyScore(movie: Movie, preferredGenres: Set<string>) {
 
 function movieVector(movie: Movie) { return embedText(buildMovieProfile(movie)); }
 
-function diversityRerank(results: RecommendationResult[], mode: RecommendationMode, limit: number) {
+function diversityRerank(results: RecommendationResult[], mode: RecommendationMode, limit: number, promptActive = false) {
   const selected: RecommendationResult[] = [];
   const remaining = [...results];
-  const penalty = mode === "focused" ? 0.05 : mode === "exploratory" ? 0.17 : 0.11;
+  const basePenalty = mode === "focused" ? 0.05 : mode === "exploratory" ? 0.17 : 0.11;
+  const penalty = promptActive ? basePenalty * 0.25 : basePenalty;
   while (selected.length < limit && remaining.length) {
     let bestIndex = 0;
     let bestScore = Number.NEGATIVE_INFINITY;

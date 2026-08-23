@@ -16,6 +16,7 @@ import {
   getTasteSprintMovies,
   getTrendingMovies,
   hasTmdbKey,
+  matchesPickFilters,
   posterUrl,
   askPickAMovie,
   searchMovies,
@@ -156,6 +157,7 @@ export default function App() {
   const [filters, setFilters] = useState<PickFilters>(defaultFilters);
   const [prompt, setPrompt] = useState("");
   const [promptExplanation, setPromptExplanation] = useState("");
+  const [promptScores, setPromptScores] = useState<Record<number, number>>({});
   const [pickLoading, setPickLoading] = useState(true);
   const [pickError, setPickError] = useState("");
   const [visiblePickIds, setVisiblePickIds] = useState<number[]>([]);
@@ -246,21 +248,35 @@ export default function App() {
     setVisiblePickIds([]);
     const timeout = window.setTimeout(async () => {
       try {
-        const discovered = await discoverPickMovies(filters);
+        const hasPrompt = prompt.trim().length >= 3;
+        const discovered = hasPrompt ? [] : await discoverPickMovies(filters);
+        if (cancelled) return;
         let movies = discovered;
-        if (prompt.trim().length >= 3) {
+        if (hasPrompt) {
           const askResult = await askPickAMovie(prompt.trim());
+          if (cancelled) return;
           const prompted = askResult.movies;
-          const allowed = new Set(discovered.map((movie) => movie.id));
-          const constrained = prompted.filter((movie) => !hasActiveStructuredFilters(filters) || allowed.has(movie.id));
+          const constrained = prompted.filter((movie) => matchesPickFilters(movie, { ...filters, providerIds: [] }));
+          if (import.meta.env.DEV) {
+            console.debug("[pick-prompt] resolved", JSON.stringify({
+              serviceStatus: askResult.serviceStatus,
+              promptedCount: prompted.length,
+              constrainedCount: constrained.length,
+              topTitles: constrained.slice(0, 5).map((movie) => movie.title),
+            }));
+          }
           movies = constrained;
+          setPromptScores(Object.fromEntries(constrained.map((movie) => [movie.id, askResult.promptScores[movie.id] || 0.35])));
           setPromptExplanation(askResult.explanation);
+        } else {
+          setPromptScores({});
         }
         if (cancelled) return;
         setCandidateMovies(movies);
         rememberMovies(movies);
-      } catch {
-        if (!cancelled) { setPickError("Recommendations are using saved movie data."); setCandidateMovies(catalog.length ? catalog : fallbackMovies); }
+      } catch (error) {
+        if (import.meta.env.DEV) console.error("[pick-prompt] failed", error);
+        if (!cancelled) { setPickError("Recommendations are using saved movie data."); setPromptScores({}); setCandidateMovies(catalog.length ? catalog : fallbackMovies); }
       } finally { if (!cancelled) setPickLoading(false); }
     }, 320);
     return () => { cancelled = true; window.clearTimeout(timeout); };
@@ -275,8 +291,8 @@ export default function App() {
   const collaborativeEvidence = useMemo(() => explainCollaborativeCandidates(collaborativeModel, ratings, allMovies), [collaborativeModel, ratings, allMovies]);
   const ranked = useMemo(() => recommendMovies({
     movies: candidateMovies,
-    ratings, watchlist, watched, interest, preferences, pickIntents, reviewInsights, collaborativeScores, collaborativeEvidence, mode: "balanced", limit: 30,
-  }), [candidateMovies, allMovies, ratings, watchlist, watched, interest, preferences, pickIntents, reviewInsights, collaborativeScores, collaborativeEvidence]);
+    ratings, watchlist, watched, interest, preferences, pickIntents, reviewInsights, promptScores, collaborativeScores, collaborativeEvidence, mode: "balanced", limit: 30,
+  }), [candidateMovies, allMovies, ratings, watchlist, watched, interest, preferences, pickIntents, reviewInsights, promptScores, collaborativeScores, collaborativeEvidence]);
 
   useEffect(() => {
     const targets = ranked.slice(0, filters.providerIds.length ? 15 : 6).map((result) => result.movie);
@@ -649,8 +665,6 @@ export default function App() {
     {tourOpen && <OnboardingTour slide={tourSlide} setSlide={setTourSlide} onClose={closeTour} />}
   </div>;
 }
-
-function hasActiveStructuredFilters(filters: PickFilters) { return Boolean(filters.mood || filters.runtime || filters.genre || filters.era || filters.providerIds.length); }
 
 function PickView(props: {
   prompt: string; promptExplanation: string; setPrompt: (value: string) => void; filters: PickFilters; setFilters: (updater: (current: PickFilters) => PickFilters) => void;
