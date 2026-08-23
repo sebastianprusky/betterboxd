@@ -16,7 +16,7 @@ import {
 } from "./services/supabase";
 import { createMergeKey, mergeGuestAndAccountState } from "./services/accountState";
 import {
-  askBetterBoxd,
+  askPickAMovie,
   getMovieDetails,
   getRecommendationCatalog,
   getTasteSprintMovies,
@@ -27,7 +27,7 @@ import {
   searchMoviesWithDebug,
 } from "./services/tmdb";
 import type {
-  AskBetterBoxdResult,
+  AskPickAMovieResult,
   AskFilter,
   CloudUserState,
   InterestMap,
@@ -50,19 +50,34 @@ import type {
 
 type SearchMode = "movies" | "ask";
 
-const ratingsKey = "betterboxd-ratings";
-const watchlistKey = "betterboxd-watchlist";
-const reviewsKey = "betterboxd-reviews";
-const themeKey = "betterboxd-theme";
-const watchedKey = "betterboxd-watched";
-const interestKey = "betterboxd-interest";
-const preferencesKey = "betterboxd-onboarding-preferences";
-const recommendationModeKey = "betterboxd-recommendation-mode";
-const recommendationEventsKey = "betterboxd-recommendation-events";
-const movieCacheKey = "betterboxd-movie-cache";
-const developerModeKey = "betterboxd-developer-mode";
-const stateMetadataKey = "betterboxd-state-metadata";
-const guestMergeKeyKey = "betterboxd-guest-merge-key";
+const ratingsKey = "pickamovie-ratings";
+const watchlistKey = "pickamovie-watchlist";
+const reviewsKey = "pickamovie-reviews";
+const themeKey = "pickamovie-theme";
+const watchedKey = "pickamovie-watched";
+const interestKey = "pickamovie-interest";
+const preferencesKey = "pickamovie-onboarding-preferences";
+const recommendationModeKey = "pickamovie-recommendation-mode";
+const recommendationEventsKey = "pickamovie-recommendation-events";
+const movieCacheKey = "pickamovie-movie-cache";
+const developerModeKey = "pickamovie-developer-mode";
+const stateMetadataKey = "pickamovie-state-metadata";
+const guestMergeKeyKey = "pickamovie-guest-merge-key";
+const legacyStorageKeys = {
+  ratings: "betterboxd-ratings",
+  watchlist: "betterboxd-watchlist",
+  reviews: "betterboxd-reviews",
+  theme: "betterboxd-theme",
+  watched: "betterboxd-watched",
+  interest: "betterboxd-interest",
+  preferences: "betterboxd-onboarding-preferences",
+  recommendationMode: "betterboxd-recommendation-mode",
+  recommendationEvents: "betterboxd-recommendation-events",
+  movieCache: "betterboxd-movie-cache",
+  developerMode: "betterboxd-developer-mode",
+  stateMetadata: "betterboxd-state-metadata",
+  guestMergeKey: "betterboxd-guest-merge-key",
+} as const;
 const sprintRefillThreshold = 6;
 
 function isCreatorOverviewRoute() {
@@ -85,8 +100,9 @@ const defaultPreferences: OnboardingPreferences = {
 
 const selectableGenres = [...new Set(Object.values(genreIds))].sort();
 
-function readJson<T>(key: string, fallback: T, legacyKey?: string): T {
-  const value = localStorage.getItem(key) || (legacyKey ? localStorage.getItem(legacyKey) : null);
+function readJson<T>(key: string, fallback: T, legacyKeys: string | string[] = []): T {
+  const keys = [key, ...(Array.isArray(legacyKeys) ? legacyKeys : [legacyKeys])];
+  const value = keys.map((candidate) => localStorage.getItem(candidate)).find((candidate) => candidate !== null);
   return value ? JSON.parse(value) : fallback;
 }
 
@@ -166,22 +182,22 @@ function getRecommendationDebug(results: RecommendationResult[]): MovieDebugMap 
 }
 
 function App() {
-  const askCache = useRef<Record<string, AskBetterBoxdResult>>({});
+  const askCache = useRef<Record<string, AskPickAMovieResult>>({});
   const [tab, setTab] = useState<Tab>("discover");
-  const [theme, setTheme] = useState<Theme>(() => readJson(themeKey, "light", "cinecircle-theme"));
+  const [theme, setTheme] = useState<Theme>(() => readJson(themeKey, "light", [legacyStorageKeys.theme, "cinecircle-theme"]));
   const [recommendationMode, setRecommendationMode] = useState<RecommendationMode>(() =>
-    readJson<RecommendationMode>(recommendationModeKey, "balanced")
+    readJson<RecommendationMode>(recommendationModeKey, "balanced", legacyStorageKeys.recommendationMode)
   );
   const [preferences, setPreferences] = useState<OnboardingPreferences>(() =>
-    readJson(preferencesKey, defaultPreferences)
+    readJson(preferencesKey, defaultPreferences, legacyStorageKeys.preferences)
   );
-  const [ratings, setRatings] = useState<RatingMap>(() => readJson(ratingsKey, initialRatings, "cinecircle-ratings"));
-  const [watchlist, setWatchlist] = useState<WatchlistMap>(() => readJson(watchlistKey, {}, "cinecircle-watchlist"));
-  const [watched, setWatched] = useState<WatchedMap>(() => readJson(watchedKey, {}));
-  const [interest, setInterest] = useState<InterestMap>(() => readJson(interestKey, {}));
-  const [reviews, setReviews] = useState<ReviewMap>(() => readJson(reviewsKey, {}));
+  const [ratings, setRatings] = useState<RatingMap>(() => readJson(ratingsKey, initialRatings, [legacyStorageKeys.ratings, "cinecircle-ratings"]));
+  const [watchlist, setWatchlist] = useState<WatchlistMap>(() => readJson(watchlistKey, {}, [legacyStorageKeys.watchlist, "cinecircle-watchlist"]));
+  const [watched, setWatched] = useState<WatchedMap>(() => readJson(watchedKey, {}, legacyStorageKeys.watched));
+  const [interest, setInterest] = useState<InterestMap>(() => readJson(interestKey, {}, legacyStorageKeys.interest));
+  const [reviews, setReviews] = useState<ReviewMap>(() => readJson(reviewsKey, {}, legacyStorageKeys.reviews));
   const [recommendationEvents, setRecommendationEvents] = useState<RecommendationEvent[]>(() =>
-    readJson(recommendationEventsKey, [])
+    readJson(recommendationEventsKey, [], legacyStorageKeys.recommendationEvents)
   );
   const [creatorOverviewRoute] = useState(isCreatorOverviewRoute);
   const [session, setSession] = useState<AuthSession | null>(null);
@@ -191,15 +207,15 @@ function App() {
   const [mergeNotice, setMergeNotice] = useState("");
   const [syncStatus, setSyncStatus] = useState("Saved on this device");
   const [fieldUpdatedAt, setFieldUpdatedAt] = useState<Record<string, number>>(() =>
-    readJson<{ fieldUpdatedAt?: Record<string, number> }>(stateMetadataKey, {}).fieldUpdatedAt || {}
+    readJson<{ fieldUpdatedAt?: Record<string, number> }>(stateMetadataKey, {}, legacyStorageKeys.stateMetadata).fieldUpdatedAt || {}
   );
   const [stateUpdatedAt, setStateUpdatedAt] = useState(() =>
-    readJson<{ stateUpdatedAt?: number }>(stateMetadataKey, {}).stateUpdatedAt || Date.now()
+    readJson<{ stateUpdatedAt?: number }>(stateMetadataKey, {}, legacyStorageKeys.stateMetadata).stateUpdatedAt || Date.now()
   );
-  const [developerMode, setDeveloperMode] = useState(() => readJson(developerModeKey, false));
+  const [developerMode, setDeveloperMode] = useState(() => readJson(developerModeKey, false, legacyStorageKeys.developerMode));
   const [profileSort, setProfileSort] = useState<ProfileSort>("recentlyWatched");
   const [movies, setMovies] = useState<Movie[]>(fallbackMovies);
-  const [catalogMovies, setCatalogMovies] = useState<Movie[]>(() => readJson(movieCacheKey, fallbackMovies));
+  const [catalogMovies, setCatalogMovies] = useState<Movie[]>(() => readJson(movieCacheKey, fallbackMovies, legacyStorageKeys.movieCache));
   const [searchQuery, setSearchQuery] = useState("");
   const [searchMode, setSearchMode] = useState<SearchMode>("movies");
   const [searchResults, setSearchResults] = useState<Movie[]>([]);
@@ -227,7 +243,7 @@ function App() {
   const activeStateRef = useRef<CloudUserState | null>(null);
   const guestSnapshotRef = useRef<CloudUserState | null>(null);
   const sessionRef = useRef<AuthSession | null>(null);
-  const mergeKeyRef = useRef(readJson<string>(guestMergeKeyKey, "") || createMergeKey());
+  const mergeKeyRef = useRef(readJson<string>(guestMergeKeyKey, "", legacyStorageKeys.guestMergeKey) || createMergeKey());
   const handleProfileChange = useCallback((profile: UserProfile | null) => setAccountProfile(profile), []);
   const sprintPageRef = useRef(1);
   const sprintLoadingRef = useRef(false);
@@ -365,7 +381,7 @@ function App() {
         }
 
         setAskLoading(true);
-        askBetterBoxd(query)
+        askPickAMovie(query)
           .then((result) => {
             if (cancelled) return;
             askCache.current[cacheKey] = result;
@@ -1064,7 +1080,7 @@ function App() {
           <section className="screen">
             <div className={`search-shell ${searchMode === "ask" ? "is-ask-mode" : ""}`}>
               <label className="field">
-                <span>{searchMode === "ask" ? "Ask BetterBoxd" : "Find movies"}</span>
+                <span>{searchMode === "ask" ? "Ask PickAMovie" : "Find movies"}</span>
                 <input
                   autoFocus
                   value={searchQuery}
@@ -1360,7 +1376,7 @@ function SearchModeControl({ mode, onChange }: { mode: SearchMode; onChange: (mo
         Search movies
       </button>
       <button className={mode === "ask" ? "is-active" : ""} onClick={() => onChange("ask")}>
-        Ask BetterBoxd
+        Ask PickAMovie
       </button>
     </div>
   );

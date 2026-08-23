@@ -1,5 +1,5 @@
 import { fallbackMovies, genreIds } from "../data/fallbackMovies";
-import type { AskBetterBoxdResult, AskFilter, Movie, MovieDebugInfo, MovieDebugMap } from "../types";
+import type { AskPickAMovieResult, AskFilter, Movie, MovieDebugInfo, MovieDebugMap } from "../types";
 import { localSemanticSearchWithDebug, searchMoviesSemantically, type SearchWithDebugResult } from "./semanticSearch";
 
 const apiKey = import.meta.env.VITE_TMDB_API_KEY as string | undefined;
@@ -434,7 +434,7 @@ function explainAskIntent(intent: AskIntent, usedSemanticRanking: boolean) {
   return `I understood: ${understood}. ${usedSemanticRanking ? "Fuzzy wording was used to reorder the filtered matches." : "Results use metadata filtering."}`;
 }
 
-export async function askBetterBoxd(query: string): Promise<AskBetterBoxdResult> {
+export async function askPickAMovie(query: string): Promise<AskPickAMovieResult> {
   const trimmed = query.trim();
   if (!trimmed) return { movies: [], debug: {}, filters: [], explanation: "Ask for a genre, mood, era, or other movie request." };
 

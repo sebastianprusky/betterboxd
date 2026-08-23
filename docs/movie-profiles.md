@@ -1,6 +1,6 @@
 # Movie Profiles
 
-Movie profiles are the canonical text documents used by BetterBoxd recommendation and search logic.
+Movie profiles are the canonical text documents used by PickAMovie recommendation and search logic.
 
 The goal is to keep one shared representation so local vectors, fallback text search, and server-side OpenAI embeddings compare the same movie text.
 
@@ -47,7 +47,7 @@ Missing fields are omitted.
 
 ## Current Semantic Search
 
-The client fallback embeds this profile locally. Ask BetterBoxd can also send bounded movie candidates to `api/semantic-search.ts`, which mirrors these labeled fields and embeds them with OpenAI server-side:
+The client fallback embeds this profile locally. Ask PickAMovie can also send bounded movie candidates to `api/semantic-search.ts`, which mirrors these labeled fields and embeds them with OpenAI server-side:
 
 ```text
 movie_embedding = embed(buildMovieProfile(movie))

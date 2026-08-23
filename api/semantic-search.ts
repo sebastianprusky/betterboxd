@@ -106,14 +106,14 @@ class RequestBodyError extends Error {
 }
 
 const sharedState = globalThis as typeof globalThis & {
-  __betterboxdEmbeddingCache?: Map<string, EmbeddingCacheEntry>;
-  __betterboxdRateLimits?: Map<string, RateLimitEntry>;
+  __pickAMovieEmbeddingCache?: Map<string, EmbeddingCacheEntry>;
+  __pickAMovieRateLimits?: Map<string, RateLimitEntry>;
 };
 
-const embeddingCache = sharedState.__betterboxdEmbeddingCache ?? new Map<string, EmbeddingCacheEntry>();
-const rateLimits = sharedState.__betterboxdRateLimits ?? new Map<string, RateLimitEntry>();
-sharedState.__betterboxdEmbeddingCache = embeddingCache;
-sharedState.__betterboxdRateLimits = rateLimits;
+const embeddingCache = sharedState.__pickAMovieEmbeddingCache ?? new Map<string, EmbeddingCacheEntry>();
+const rateLimits = sharedState.__pickAMovieRateLimits ?? new Map<string, RateLimitEntry>();
+sharedState.__pickAMovieEmbeddingCache = embeddingCache;
+sharedState.__pickAMovieRateLimits = rateLimits;
 
 function sendJson(body: unknown, status = 200) {
   return Response.json(body, { status });

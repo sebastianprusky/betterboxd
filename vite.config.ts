@@ -38,7 +38,7 @@ async function writeFetchResponse(fetchResponse: Response, response: NodeRespons
 
 function semanticSearchApi(): Plugin {
   return {
-    name: "betterboxd-semantic-search-api",
+    name: "pickamovie-semantic-search-api",
     config(_, { mode }) {
       const env = loadEnv(mode, ".", "");
       [
@@ -46,6 +46,7 @@ function semanticSearchApi(): Plugin {
         "SUPABASE_URL",
         "SUPABASE_ANON_KEY",
         "SUPABASE_SERVICE_ROLE_KEY",
+        "PICKAMOVIE_CREATOR_USER_ID",
         "BETTERBOXD_CREATOR_USER_ID",
         "VITE_SUPABASE_URL",
         "VITE_SUPABASE_ANON_KEY",

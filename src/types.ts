@@ -43,7 +43,7 @@ export type AskFilter = {
   value: string;
 };
 
-export type AskBetterBoxdResult = {
+export type AskPickAMovieResult = {
   movies: Movie[];
   debug: MovieDebugMap;
   filters: AskFilter[];

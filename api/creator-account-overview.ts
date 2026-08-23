@@ -102,7 +102,7 @@ async function verifyCreator(request: Request) {
   const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
   const supabaseAnonKey = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY;
   const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  const creatorUserId = process.env.BETTERBOXD_CREATOR_USER_ID;
+  const creatorUserId = process.env.PICKAMOVIE_CREATOR_USER_ID || process.env.BETTERBOXD_CREATOR_USER_ID;
 
   if (!supabaseUrl || !supabaseAnonKey || !serviceRoleKey || !creatorUserId) {
     return sendJson({
@@ -111,7 +111,7 @@ async function verifyCreator(request: Request) {
         !supabaseUrl ? "SUPABASE_URL or VITE_SUPABASE_URL" : "",
         !supabaseAnonKey ? "SUPABASE_ANON_KEY or VITE_SUPABASE_ANON_KEY" : "",
         !serviceRoleKey ? "SUPABASE_SERVICE_ROLE_KEY" : "",
-        !creatorUserId ? "BETTERBOXD_CREATOR_USER_ID" : "",
+        !creatorUserId ? "PICKAMOVIE_CREATOR_USER_ID" : "",
       ].filter(Boolean),
     }, 503);
   }

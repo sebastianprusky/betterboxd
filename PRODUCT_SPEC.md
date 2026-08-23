@@ -1,8 +1,8 @@
-# BetterBoxd Product Spec
+# PickAMovie Product Spec
 
 ## 1. Product Goal
 
-BetterBoxd is a portfolio-first movie discovery web app that could grow into a real social product. It should feel like a cleaner, more useful alternative to Letterboxd: less clutter, better everyday UX, and recommendations based on a user’s ratings.
+PickAMovie is a portfolio-first movie discovery web app that could grow into a real social product. It should emphasize fast taste-building, useful recommendations, and lightweight social discovery without unnecessary clutter.
 
 The first version should be impressive enough for a portfolio viewer to understand the product vision quickly, while keeping the architecture realistic for future accounts, saved data, and public hosting.
 
@@ -15,7 +15,7 @@ The first version should be impressive enough for a portfolio viewer to understa
 
 ## 3. Core Differentiators
 
-- Cleaner UI than Letterboxd, with fewer competing panels and less visual noise
+- A cleaner UI with fewer competing panels and less visual noise
 - Ratings-first recommendation system
 - Taste matching features that explain why a movie is suggested
 - Modern social app structure based on following, not mutual friend requests
@@ -47,7 +47,7 @@ Core elements:
 
 ### Search
 
-Purpose: Let users find any movie, similar to Letterboxd.
+Purpose: Let users find any movie through one comprehensive catalog.
 
 Core elements:
 
@@ -105,11 +105,11 @@ Later features:
 - Reviews and comments
 - Shared recommendation explanations such as “people you follow rated this highly”
 
-Following should work like Letterboxd/Twitter, not mutual friend requests.
+Social relationships should use mutual friend requests with clear privacy boundaries.
 
 ## 7. Movie Data
 
-BetterBoxd should eventually support all movies, not a small fixed catalog.
+PickAMovie should eventually support all movies, not a small fixed catalog.
 
 Recommended API:
 
@@ -172,7 +172,7 @@ Reference direction:
 - Raycast for fast command-like actions and keyboard-friendly interaction
 - Beli for quick addictive taste-building interactions
 
-The goal is not to copy any one app. BetterBoxd should feel like a clean social movie app with Arc's simplicity, Linear's polish, and Beli's quick taste loop.
+PickAMovie should feel like a clean social movie app with Arc's simplicity, Linear's polish, and Beli's quick taste loop.
 
 Principles:
 
@@ -322,7 +322,7 @@ Current persistence implementation:
 ### Current Local Baseline
 
 - TMDB search plus a fallback demo catalog
-- Ask BetterBoxd natural-language search with server-side semantic ranking and local fallback
+- Ask PickAMovie natural-language search with server-side semantic ranking and local fallback
 - Local ratings, watchlist, watched state, reviews, Taste Sprint signals, and recommendation feedback
 - Weighted, diversity-reranked local recommendations built from canonical movie profiles
 - Responsive phone and desktop UI
@@ -351,7 +351,7 @@ Current persistence implementation:
 
 ## 16. Decisions Made
 
-- App name: BetterBoxd for now
+- App name: PickAMovie
 - Theme: light and dark mode, with a user-facing toggle
 - Accent color: pale green
 - Stack: React + Vite
@@ -384,7 +384,7 @@ Taste Sprint is a fast swipe-style movie rating flow. The user sees one movie at
 - Swipe up / tap stars: rate if already watched
 - Long press / details button: open the movie detail view
 
-Why it fits BetterBoxd:
+Why it fits PickAMovie:
 
 - It turns onboarding into a fun taste-building loop
 - It gives the recommendation engine useful rating data quickly

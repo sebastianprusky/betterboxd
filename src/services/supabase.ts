@@ -53,7 +53,7 @@ export async function signUpWithPassword(email: string, password: string) {
   const { error } = await supabase.auth.signUp({
     email: email.trim(),
     password,
-    options: { data: { app_name: "BetterBoxd" } },
+    options: { data: { app_name: "PickAMovie" } },
   });
   if (error) throw error;
 }

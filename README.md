@@ -1,12 +1,12 @@
-# BetterBoxd
+# PickAMovie
 
-BetterBoxd is a clean movie rating and recommendation web app prototype. It is portfolio-first, but structured so it can later support accounts, follows, reviews, and real user data.
+PickAMovie is a clean movie discovery, rating, recommendation, and social web app.
 
 ## Current Features
 
 - Discover page with an embedded Taste Sprint quick-rating flow
 - TMDB-powered movie search when `VITE_TMDB_API_KEY` is configured
-- Ask BetterBoxd mode for natural-language requests with local filter parsing, TMDB discover filtering, and semantic ranking for fuzzy intent
+- Ask PickAMovie mode for natural-language requests with local filter parsing, TMDB discover filtering, and semantic ranking for fuzzy intent
 - Server-side OpenAI semantic search when `OPENAI_API_KEY` is configured
 - Fallback demo movie data with real poster URLs for local testing without an API key
 - Half-star rating system stored in `localStorage`
@@ -64,7 +64,7 @@ VITE_SUPABASE_ANON_KEY=your_supabase_anon_key_here
 
 Without Supabase env vars, the app remains fully usable as a local guest. Do not claim account sync or social access is live until the schema, RLS policies, auth redirect URLs, and end-to-end flows have been verified against the intended project.
 
-Existing users who previously signed in with email links should use **Reset password** from the BetterBoxd sign-in modal. Supabase sends a recovery link for the same verified email account, so the existing profile, username, friend graph, and first-sign-in merge receipt stay attached to the same auth user instead of creating a duplicate account.
+Existing users who previously signed in with email links should use **Reset password** from the PickAMovie sign-in modal. Supabase sends a recovery link for the same verified email account, so the existing profile, username, friend graph, and first-sign-in merge receipt stay attached to the same auth user instead of creating a duplicate account.
 
 Run the app:
 
