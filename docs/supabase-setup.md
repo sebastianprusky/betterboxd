@@ -24,9 +24,9 @@ VITE_SUPABASE_ANON_KEY=your_anon_public_key
 In Supabase, go to Authentication > URL Configuration and set:
 
 ```text
-Site URL: https://pickamovie.vercel.app
+Site URL: https://usepickamovie.vercel.app
 Redirect URLs:
-https://pickamovie.vercel.app
+https://usepickamovie.vercel.app
 ```
 
 The app passes the current deployed origin for Google OAuth redirects and legacy password-recovery redirects. Add each production and preview origin that should accept Supabase auth callbacks.
@@ -44,7 +44,7 @@ https://rkkqbfuxorbunwewyowm.supabase.co/auth/v1/callback
 Use the public Vercel app as an authorized JavaScript origin:
 
 ```text
-https://pickamovie.vercel.app
+https://usepickamovie.vercel.app
 ```
 
 After Google redirects back, the app still requires the user to choose a unique public username before profile provisioning and guest-data merge. Email remains private and is not stored in `public.profiles`.
