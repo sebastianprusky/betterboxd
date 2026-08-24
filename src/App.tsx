@@ -704,7 +704,7 @@ export default function App() {
   const similarityPoints = useMemo(() => buildSimilarityMap(tasteRanked, 24), [tasteRanked]);
   const sprintMovie = sprintQueue[0];
 
-  return <div className="app-shell">
+  return <div className={tab === "pick" && prompt.trim().length < 3 ? "app-shell is-empty-pick" : "app-shell"}>
     <a className="skip-link" href="#main-content">Skip to content</a>
     <header className="site-header">
       <button className="wordmark" onClick={() => setTab("pick")}>PickAMovie</button>
