@@ -110,8 +110,9 @@ main { padding-bottom: 4rem; }
 @keyframes pop-in { from { opacity: 0; transform: translateY(-5px) scale(.985); } }
 .provider-popover > label { display: flex; justify-content: space-between; align-items: center; font-size: .83rem; font-weight: 600; }
 .provider-popover select { border: 1px solid var(--line); border-radius: .45rem; background: var(--paper); padding: .35rem .5rem; }
-.provider-options { display: grid; grid-template-columns: 1fr 1fr; gap: .25rem .6rem; max-height: 16rem; overflow: auto; margin: .8rem 0; }
+.provider-options { display: grid; grid-template-columns: 1fr; gap: .25rem; max-height: 22rem; overflow: auto; }
 .provider-options label { display: flex; align-items: center; gap: .5rem; min-height: 2rem; font-size: .78rem; }
+.provider-options .anywhere-option { padding-bottom: .35rem; margin-bottom: .1rem; border-bottom: 1px solid var(--line); font-weight: 700; }
 .provider-popover small { color: var(--muted); }
 .provider-empty { color: var(--muted); font-size: .78rem; margin: .9rem 0; }
 .prompt-explanation { margin: .7rem auto 0; max-width: 65ch; color: var(--muted); text-align: center; font-size: .76rem; text-wrap: pretty; }

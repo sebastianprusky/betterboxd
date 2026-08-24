@@ -12,7 +12,6 @@ import {
   getMovieWatchProviders,
   getNowPlayingMovieIds,
   getRecommendationCatalog,
-  getStreamingProviders,
   getTasteSprintMovies,
   getTrendingMovies,
   hasTmdbKey,
@@ -47,7 +46,6 @@ import type {
   ReviewInsightMap,
   ReviewMap,
   StreamingAvailability,
-  StreamingProvider,
   Tab,
   Theme,
   WatchedMap,
@@ -96,6 +94,17 @@ const defaultFilters = (): PickFilters => ({
 });
 const genreOptions = [["Comedy", "Comedy"], ["Drama", "Drama"], ["Thriller", "Thriller"], ["Horror", "Horror"], ["Romance", "Romance"], ["Science Fiction", "Sci-Fi"], ["Animation", "Animation"]] as const;
 const eraOptions = [["recent", "2020s"], ["2010s", "2010s"], ["2000s", "2000s"], ["1990s", "1990s"], ["1980s", "1980s"], ["1970s", "1970s"], ["1960s", "1960s"], ["pre1960", "Before 1960"]] as const;
+const watchProviderOptions = [
+  { label: "Apple TV", ids: [350] },
+  { label: "Disney Plus", ids: [337] },
+  { label: "Netflix", ids: [8, 1796] },
+  { label: "Amazon Prime Video", ids: [9, 2100] },
+  { label: "Peacock", ids: [386, 387] },
+  { label: "Hulu", ids: [15] },
+  { label: "HBO Max", ids: [1899] },
+  { label: "Paramount+", ids: [2303, 2616] },
+] as const;
+const allWatchProviderIds = [...new Set(watchProviderOptions.flatMap((provider) => provider.ids))];
 const ratingChoices = Array.from({ length: 10 }, (_, index) => (index + 1) / 2);
 
 function readJson<T>(key: string, fallback: T, oldKeys: string[] = []): T {
@@ -162,7 +171,6 @@ export default function App() {
   const [visiblePickIds, setVisiblePickIds] = useState<number[]>([]);
   const [selectedPick, setSelectedPick] = useState<RecommendationResult | null>(null);
   const [expandedReason, setExpandedReason] = useState<number | null>(null);
-  const [providers, setProviders] = useState<StreamingProvider[]>([]);
   const [providerOpen, setProviderOpen] = useState(false);
   const [availability, setAvailability] = useState<Record<number, StreamingAvailability>>({});
   const [theaterMovieIds, setTheaterMovieIds] = useState<Set<number> | null>(null);
@@ -237,10 +245,6 @@ export default function App() {
   }, [collaborativeModel, ratings]);
 
   useEffect(() => {
-    getStreamingProviders(filters.region).then(setProviders).catch(() => setProviders([]));
-  }, [filters.region]);
-
-  useEffect(() => {
     if (!filters.includeTheaters) { setTheaterMovieIds(null); return; }
     let cancelled = false;
     setTheaterMovieIds(null);
@@ -293,7 +297,7 @@ export default function App() {
       } finally { if (!cancelled) setPickLoading(false); }
     }, 320);
     return () => { cancelled = true; window.clearTimeout(timeout); };
-  }, [filters, prompt, rememberMovies]);
+  }, [filters.runtimeMin, filters.runtimeMax, filters.genres.join(","), filters.eras.join(","), prompt, rememberMovies]);
 
   const allMovies = useMemo(() => mergeMovies(
     fallbackMovies, catalog, candidateMovies, Object.values(watchlist), Object.values(watched).map((entry) => entry.movie),
@@ -673,7 +677,7 @@ export default function App() {
 
     <main id="main-content">
       {tab === "pick" && <PickView
-        prompt={promptDraft} hasSubmittedPrompt={prompt.trim().length >= 3} promptExplanation={promptExplanation} setPrompt={setPromptDraft} onSubmitPrompt={() => setPrompt(promptDraft.trim())} filters={filters} setFilters={setFilters} providers={providers} providerOpen={providerOpen} setProviderOpen={setProviderOpen} streamingConfigured={hasTmdbKey()}
+        prompt={promptDraft} hasSubmittedPrompt={prompt.trim().length >= 3} promptExplanation={promptExplanation} setPrompt={setPromptDraft} onSubmitPrompt={() => setPrompt(promptDraft.trim())} filters={filters} setFilters={setFilters} providerOpen={providerOpen} setProviderOpen={setProviderOpen} streamingConfigured={hasTmdbKey()}
         results={prompt.trim().length >= 3 ? visibleResults : []} totalResults={eligibleRanked.length} resultMode={promptResultMode} expandedResults={expandedResults} loading={prompt.trim().length >= 3 && (pickLoading || streamingChecksPending)} error={pickError}
         availability={availability} expandedReason={expandedReason} setExpandedReason={setExpandedReason} watched={watched} watchlist={watchlist}
         onWatched={markWatched} onSave={saveMovie} onPick={chooseMovie} onReject={rejectMovie} onOpen={openMovie} onShowMore={showMore} onClearStreaming={() => setFilters((current) => ({ ...current, providerIds: [], includeTheaters: false }))} developerMode={developerMode}
@@ -699,11 +703,26 @@ export default function App() {
 
 function PickView(props: {
   prompt: string; hasSubmittedPrompt: boolean; promptExplanation: string; setPrompt: (value: string) => void; onSubmitPrompt: () => void; filters: PickFilters; setFilters: (updater: (current: PickFilters) => PickFilters) => void;
-  providers: StreamingProvider[]; providerOpen: boolean; setProviderOpen: (value: boolean) => void; results: RecommendationResult[]; totalResults: number; resultMode: "curated" | "collection"; expandedResults: boolean; loading: boolean; error: string;
+  providerOpen: boolean; setProviderOpen: (value: boolean) => void; results: RecommendationResult[]; totalResults: number; resultMode: "curated" | "collection"; expandedResults: boolean; loading: boolean; error: string;
   availability: Record<number, StreamingAvailability>; expandedReason: number | null; setExpandedReason: (id: number | null) => void; watched: WatchedMap; watchlist: WatchlistMap;
   onWatched: (movie: Movie) => void; onSave: (movie: Movie) => void; onPick: (result: RecommendationResult) => void; onReject: (movie: Movie) => void; onOpen: (movie: Movie) => void; onShowMore: () => void; onClearStreaming: () => void; developerMode: boolean; streamingConfigured: boolean;
 }) {
   const filterRowRef = useRef<HTMLDivElement>(null);
+  const selectedProviderGroups = watchProviderOptions.filter((provider) => provider.ids.every((id) => props.filters.providerIds.includes(id))).length;
+  const selectedWatchLocations = selectedProviderGroups + (props.filters.includeTheaters ? 1 : 0);
+  const anywhereSelected = props.filters.includeTheaters && selectedProviderGroups === watchProviderOptions.length;
+  const toggleProviderGroup = (ids: readonly number[]) => props.setFilters((current) => {
+    const selected = ids.every((id) => current.providerIds.includes(id));
+    const next = new Set(current.providerIds);
+    ids.forEach((id) => selected ? next.delete(id) : next.add(id));
+    return { ...current, providerIds: [...next] };
+  });
+  const toggleAnywhere = () => props.setFilters((current) => {
+    const allSelected = current.includeTheaters && allWatchProviderIds.every((id) => current.providerIds.includes(id));
+    return allSelected
+      ? { ...current, providerIds: [], includeTheaters: false }
+      : { ...current, providerIds: [...allWatchProviderIds], includeTheaters: true };
+  });
   useEffect(() => {
     const closeOutside = (event: PointerEvent) => {
       const target = event.target instanceof Element ? event.target : null;
@@ -722,8 +741,8 @@ function PickView(props: {
         <RuntimeFilter filters={props.filters} setFilters={props.setFilters} />
         <MultiSelectFilter label="Genre" values={props.filters.genres} options={genreOptions} onToggle={(genre) => props.setFilters((current) => ({ ...current, genres: current.genres.includes(genre) ? current.genres.filter((item) => item !== genre) : [...current.genres, genre] }))} />
         <MultiSelectFilter label="Era" values={props.filters.eras} options={eraOptions.map(([value, label]) => [value, label])} onToggle={(era) => props.setFilters((current) => ({ ...current, eras: current.eras.includes(era) ? current.eras.filter((item) => item !== era) : [...current.eras, era] }))} />
-        <div className="provider-filter"><button className={props.filters.providerIds.length || props.filters.includeTheaters ? "filter-button is-active" : "filter-button"} disabled={!props.streamingConfigured} title={props.streamingConfigured ? undefined : "Availability is not configured"} aria-expanded={props.providerOpen} onClick={() => props.setProviderOpen(!props.providerOpen)}>Where to watch{props.filters.providerIds.length + (props.filters.includeTheaters ? 1 : 0) ? ` · ${props.filters.providerIds.length + (props.filters.includeTheaters ? 1 : 0)}` : ""}<Icon name="chevron" /></button>
-          {props.providerOpen && <div className="provider-popover"><div className="provider-options"><label className="theater-option"><input type="checkbox" checked={props.filters.includeTheaters} onChange={() => props.setFilters((current) => ({ ...current, includeTheaters: !current.includeTheaters }))} />In theaters</label>{props.providers.slice(0, 12).map((provider) => <label key={provider.id}><input type="checkbox" checked={props.filters.providerIds.includes(provider.id)} onChange={() => props.setFilters((current) => ({ ...current, providerIds: current.providerIds.includes(provider.id) ? current.providerIds.filter((id) => id !== provider.id) : [...current.providerIds, provider.id] }))} />{provider.name}</label>)}</div>{!props.providers.length && <p className="provider-empty">Streaming providers are unavailable right now.</p>}</div>}
+        <div className="provider-filter"><button className={selectedWatchLocations ? "filter-button is-active" : "filter-button"} disabled={!props.streamingConfigured} title={props.streamingConfigured ? undefined : "Availability is not configured"} aria-expanded={props.providerOpen} onClick={() => props.setProviderOpen(!props.providerOpen)}>Where to watch{selectedWatchLocations ? ` · ${selectedWatchLocations}` : ""}<Icon name="chevron" /></button>
+          {props.providerOpen && <div className="provider-popover"><div className="provider-options"><label className="anywhere-option"><input type="checkbox" checked={anywhereSelected} onChange={toggleAnywhere} />Anywhere</label><label className="theater-option"><input type="checkbox" checked={props.filters.includeTheaters} onChange={() => props.setFilters((current) => ({ ...current, includeTheaters: !current.includeTheaters }))} />In theaters</label>{watchProviderOptions.map((provider) => <label key={provider.label}><input type="checkbox" checked={provider.ids.every((id) => props.filters.providerIds.includes(id))} onChange={() => toggleProviderGroup(provider.ids)} />{provider.label}</label>)}</div></div>}
         </div>
       </div>
       {props.hasSubmittedPrompt && props.promptExplanation && !props.loading && <p className="prompt-explanation">{props.promptExplanation}</p>}
