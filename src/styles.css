@@ -132,6 +132,7 @@ main { padding-bottom: 4rem; }
 .expanded-result-card { min-width: 0; display: grid; align-content: start; gap: .55rem; animation: card-in 210ms ease both; }
 .expanded-poster-button { position: relative; width: 100%; padding: 0; border: 0; border-radius: .55rem; background: transparent; box-shadow: 0 10px 25px rgba(55, 37, 30, .12); overflow: hidden; }
 .expanded-poster-button img { display: block; width: 100%; aspect-ratio: 2 / 3; object-fit: cover; transition: transform 200ms ease; }
+.movie-poster-image { background: color-mix(in srgb, var(--paper-raised) 82%, var(--line)); }
 .expanded-poster-button:hover img { transform: scale(1.025); }
 .expanded-poster-button span { position: absolute; z-index: 1; top: .45rem; left: .45rem; width: 1.65rem; height: 1.65rem; display: grid; place-items: center; border-radius: 50%; background: color-mix(in srgb, var(--paper-raised) 92%, transparent); color: var(--accent); font-family: var(--serif); font-size: .78rem; box-shadow: 0 2px 9px rgba(0, 0, 0, .16); }
 .expanded-title { min-width: 0; display: block; padding: 0; border: 0; background: transparent; text-align: left; }
