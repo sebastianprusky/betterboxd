@@ -303,6 +303,8 @@ summary { color: var(--accent); cursor: pointer; font-size: .83rem; font-weight:
 .setting-row strong, .setting-row span { display: block; }
 .setting-row strong { font-size: .9rem; }
 .setting-row span { color: var(--muted); font-size: .74rem; margin-top: .15rem; }
+.inline-confirm { display: flex; align-items: center; gap: .4rem; }
+.inline-confirm .secondary-button, .inline-confirm .danger-button { min-height: 2.4rem; white-space: nowrap; }
 .switch-row { display: flex; align-items: center; gap: .45rem; font-size: .74rem; }
 .segmented { display: flex; border: 1px solid var(--line); border-radius: .55rem; overflow: hidden; }
 .segmented button { border: 0; background: transparent; padding: .5rem .7rem; font-size: .75rem; }

@@ -90,6 +90,7 @@ const legacy: Partial<Record<keyof typeof storage, string[]>> = {
   stateMeta: ["betterboxd-state-metadata"],
   mergeKey: ["betterboxd-guest-merge-key"],
 };
+const legacyMigrationDisabledKey = "pickamovie-legacy-migration-disabled";
 
 const defaultPreferences: OnboardingPreferences = { genres: [], directors: [], actors: [], favoriteMovies: {} };
 const defaultFilters = (): PickFilters => ({
@@ -112,7 +113,8 @@ const starValues = [1, 2, 3, 4, 5] as const;
 
 function readJson<T>(key: string, fallback: T, oldKeys: string[] = []): T {
   try {
-    const raw = [key, ...oldKeys].map((candidate) => localStorage.getItem(candidate)).find((value) => value !== null);
+    const legacyMigrationDisabled = localStorage.getItem(legacyMigrationDisabledKey) === "true";
+    const raw = [key, ...(legacyMigrationDisabled ? [] : oldKeys)].map((candidate) => localStorage.getItem(candidate)).find((value) => value !== null);
     return raw ? JSON.parse(raw) as T : fallback;
   } catch { return fallback; }
 }
@@ -666,6 +668,13 @@ export default function App() {
     touch("preferences");
   }
 
+  function clearPreferences() {
+    const cleared = { ...defaultPreferences, favoriteMovies: {} };
+    writeJson(storage.preferences, cleared);
+    setPreferences(cleared);
+    touch("preferences");
+  }
+
   async function handleSignOut() { await signOut(); setSession(null); cloudLoaded.current = null; setSyncStatus("Saved on this device"); }
   async function handleDeleteCloudData() {
     if (!session) return;
@@ -673,7 +682,11 @@ export default function App() {
     cloudLoaded.current = null;
     clearLocalData();
   }
-  function clearLocalData() { Object.values(storage).forEach((key) => localStorage.removeItem(key)); window.location.reload(); }
+  function clearLocalData() {
+    Object.values(storage).forEach((key) => localStorage.removeItem(key));
+    localStorage.setItem(legacyMigrationDisabledKey, "true");
+    window.location.reload();
+  }
   function closeTour() { setTourOpen(false); writeJson(storage.tour, true); }
 
   const libraryMovies = useMemo(() => {
@@ -696,7 +709,7 @@ export default function App() {
     <header className="site-header">
       <button className="wordmark" onClick={() => setTab("pick")}>PickAMovie</button>
       <nav className="desktop-nav" aria-label="Primary">{(["pick", "taste", "library"] as Tab[]).map((item) => <button key={item} className={tab === item ? "is-active" : ""} onClick={() => setTab(item)}>{item[0].toUpperCase() + item.slice(1)}</button>)}</nav>
-      <AccountHub configured={isSupabaseConfigured} session={session} open={settingsOpen} theme={theme} syncStatus={syncStatus} developerMode={developerMode} reviewConsent={reviewConsent} state={cloudState} onOpenChange={setSettingsOpen} onThemeChange={setTheme} onDeveloperModeChange={setDeveloperMode} onReviewConsentChange={(enabled) => { setReviewConsent(enabled); setReviewConsentAsked(true); }} onReplayTour={() => { setTourSlide(0); setTourOpen(true); }} onSignOut={handleSignOut} onDeleteCloudData={handleDeleteCloudData} onClearLocalData={clearLocalData} />
+      <AccountHub configured={isSupabaseConfigured} session={session} open={settingsOpen} theme={theme} syncStatus={syncStatus} developerMode={developerMode} reviewConsent={reviewConsent} state={cloudState} onOpenChange={setSettingsOpen} onThemeChange={setTheme} onDeveloperModeChange={setDeveloperMode} onReviewConsentChange={(enabled) => { setReviewConsent(enabled); setReviewConsentAsked(true); }} onClearPreferences={clearPreferences} onReplayTour={() => { setTourSlide(0); setTourOpen(true); }} onSignOut={handleSignOut} onDeleteCloudData={handleDeleteCloudData} onClearLocalData={clearLocalData} />
     </header>
 
     <main id="main-content">

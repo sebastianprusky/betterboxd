@@ -15,6 +15,7 @@ type Props = {
   onThemeChange: (theme: Theme) => void;
   onDeveloperModeChange: (enabled: boolean) => void;
   onReviewConsentChange: (enabled: boolean) => void;
+  onClearPreferences: () => void;
   onReplayTour: () => void;
   onSignOut: () => Promise<void>;
   onDeleteCloudData: () => Promise<void>;
@@ -30,6 +31,7 @@ export function AccountHub(props: Props) {
   const [message, setMessage] = useState("");
   const [confirmingClear, setConfirmingClear] = useState(false);
   const [confirmingCloudDelete, setConfirmingCloudDelete] = useState(false);
+  const [confirmingPreferences, setConfirmingPreferences] = useState(false);
 
   async function signIn() {
     setBusy(true);
@@ -58,6 +60,7 @@ export function AccountHub(props: Props) {
         <div className="setting-row"><div><strong>Your data</strong><span>Download a private copy of your activity.</span></div><button className="secondary-button" onClick={exportData}>Export</button></div>
         <details className="data-note"><summary>How your data works</summary><p>Guest activity stays in this browser. Google sign-in privately syncs your movie activity to your account. Review text is sent for analysis only when Review learning is on; PickAMovie does not learn across its users.</p></details>
         <div className="setting-row"><div><strong>Review learning</strong><span>{props.reviewConsent ? "New private reviews can shape recommendations." : "Reviews are saved without analysis."}</span></div><label className="switch-row"><input type="checkbox" checked={props.reviewConsent} onChange={(event) => props.onReviewConsentChange(event.target.checked)} /><span>{props.reviewConsent ? "On" : "Off"}</span></label></div>
+        <div className="setting-row"><div><strong>Taste preferences</strong><span>Clear chosen genres, directors, actors, and favorite movies. Ratings and Taste Sprint reactions remain.</span></div>{confirmingPreferences ? <div className="inline-confirm"><button className="secondary-button" onClick={() => setConfirmingPreferences(false)}>Cancel</button><button className="danger-button" onClick={() => { props.onClearPreferences(); setConfirmingPreferences(false); }}>Clear preferences</button></div> : <button className="secondary-button" onClick={() => setConfirmingPreferences(true)}>Clear</button>}</div>
         <div className="setting-row"><div><strong>Walkthrough</strong><span>See the three-step introduction again.</span></div><button className="secondary-button" onClick={() => { props.onOpenChange(false); props.onReplayTour(); }}>Replay</button></div>
         <details className="developer-settings"><summary>Developer options</summary><label className="check-row"><input type="checkbox" checked={props.developerMode} onChange={(event) => props.onDeveloperModeChange(event.target.checked)} /> Show recommendation diagnostics</label></details>
         {props.session && <div className="danger-zone">{confirmingCloudDelete ? <><p>This removes synced movie activity. Your Google sign-in remains available.</p><button className="secondary-button" onClick={() => setConfirmingCloudDelete(false)}>Cancel</button><button className="danger-button" onClick={async () => { setBusy(true); setMessage(""); try { await props.onDeleteCloudData(); } catch { setMessage("Could not delete synced activity."); } finally { setBusy(false); setConfirmingCloudDelete(false); } }} disabled={busy}>Delete synced activity</button></> : <button className="danger-text" onClick={() => setConfirmingCloudDelete(true)}>Delete synced activity</button>}</div>}
