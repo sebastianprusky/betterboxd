@@ -24,6 +24,14 @@ export type Movie = {
   recommendedMovieIds?: number[];
 };
 
+export type PersonSearchResult = {
+  id: number;
+  name: string;
+  department?: string;
+  profilePath: string | null;
+  knownFor: string[];
+};
+
 export type StreamingProvider = { id: number; name: string; logoPath?: string | null };
 export type StreamingAvailability = {
   movieId: number;

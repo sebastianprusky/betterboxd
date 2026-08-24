@@ -4,6 +4,7 @@ import type {
   Movie,
   MovieDebugInfo,
   MovieDebugMap,
+  PersonSearchResult,
   PickFilters,
   StreamingAvailability,
   StreamingProvider,
@@ -64,6 +65,15 @@ type SearchCandidate = {
 type TmdbPersonCredits = {
   cast?: Array<TmdbMovie & { character?: string }>;
   crew?: Array<TmdbMovie & { job?: string }>;
+};
+
+type TmdbPersonSearchResult = {
+  id: number;
+  name?: string;
+  known_for_department?: string;
+  profile_path?: string | null;
+  popularity?: number;
+  known_for?: Array<TmdbMovie & { media_type?: string }>;
 };
 
 const mapMovie = (movie: TmdbMovie): Movie => ({
@@ -209,6 +219,10 @@ function fastSearchDebug(movies: Movie[], status: string, mode: string, reasonSo
 }
 
 export function posterUrl(path: string | null, size = "w500") {
+  return path ? `https://image.tmdb.org/t/p/${size}${path}` : "";
+}
+
+export function profileUrl(path: string | null, size = "w185") {
   return path ? `https://image.tmdb.org/t/p/${size}${path}` : "";
 }
 
@@ -379,6 +393,45 @@ export async function getTasteSprintMovies(page: number): Promise<{ movies: Movi
 
 export async function searchMovies(query: string): Promise<Movie[]> {
   return (await searchMoviesWithDebug(query)).movies;
+}
+
+export async function searchPeople(query: string, kind: "actors" | "directors"): Promise<PersonSearchResult[]> {
+  if (!apiKey || query.trim().length < 2) return [];
+  const data = await tmdbFetch(`/search/person?query=${encodeURIComponent(query.trim())}&include_adult=false&page=1`);
+  const preferredDepartment = kind === "actors" ? "Acting" : "Directing";
+  const people = (data?.results || [])
+    .map((person: TmdbPersonSearchResult) => ({
+      id: person.id,
+      name: person.name || "Unknown person",
+      department: person.known_for_department,
+      profilePath: person.profile_path || null,
+      knownFor: (person.known_for || [])
+        .filter((credit) => credit.media_type === "movie" || credit.title)
+        .slice(0, 3)
+        .map((credit) => credit.title || credit.name || "")
+        .filter(Boolean),
+      popularity: person.popularity || 0,
+    }))
+    .sort((a: PersonSearchResult & { popularity: number }, b: PersonSearchResult & { popularity: number }) => Number(b.department === preferredDepartment) - Number(a.department === preferredDepartment) || b.popularity - a.popularity)
+    .slice(0, 10);
+  if (kind === "actors") {
+    return people
+      .filter((person: PersonSearchResult & { popularity: number }) => person.department === "Acting")
+      .map(({ popularity: _popularity, ...person }: PersonSearchResult & { popularity: number }) => person);
+  }
+  const verified = await Promise.allSettled(people.slice(0, 6).map(async (person: PersonSearchResult & { popularity: number }) => {
+    const credits = await tmdbFetch(`/person/${person.id}/movie_credits?language=en-US`) as TmdbPersonCredits | null;
+    const directed = (credits?.crew || [])
+      .filter((credit) => credit.job === "Director")
+      .sort((a, b) => (b.popularity || 0) - (a.popularity || 0))
+      .map((credit) => credit.title || credit.name || "")
+      .filter(Boolean)
+      .filter((title, index, titles) => titles.indexOf(title) === index)
+      .slice(0, 3);
+    if (!directed.length) return null;
+    return { id: person.id, name: person.name, department: "Directing", profilePath: person.profilePath, knownFor: directed } satisfies PersonSearchResult;
+  }));
+  return verified.flatMap((result) => result.status === "fulfilled" && result.value ? [result.value] : []);
 }
 
 export async function searchMoviesWithDebug(query: string): Promise<SearchWithDebugResult> {

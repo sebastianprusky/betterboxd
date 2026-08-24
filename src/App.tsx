@@ -18,8 +18,10 @@ import {
   hasTmdbKey,
   matchesPickFilters,
   posterUrl,
+  profileUrl,
   askPickAMovie,
   searchMovies,
+  searchPeople,
 } from "./services/tmdb";
 import {
   getCurrentSession,
@@ -41,6 +43,7 @@ import type {
   LibraryFilter,
   Movie,
   OnboardingPreferences,
+  PersonSearchResult,
   PickFilters,
   PickIntentEvent,
   RatingMap,
@@ -93,7 +96,7 @@ const defaultFilters = (): PickFilters => ({
   runtimeMin: 30, runtimeMax: 300, genres: [], eras: [], providerIds: [], includeTheaters: false,
   region: "US",
 });
-const genreOptions = [["Comedy", "Comedy"], ["Drama", "Drama"], ["Thriller", "Thriller"], ["Horror", "Horror"], ["Romance", "Romance"], ["Science Fiction", "Sci-Fi"], ["Animation", "Animation"]] as const;
+const genreOptions = [["Action", "Action"], ["Adventure", "Adventure"], ["Animation", "Animation"], ["Comedy", "Comedy"], ["Crime", "Crime"], ["Documentary", "Documentary"], ["Drama", "Drama"], ["Family", "Family"], ["Fantasy", "Fantasy"], ["History", "History"], ["Horror", "Horror"], ["Music", "Music"], ["Mystery", "Mystery"], ["Romance", "Romance"], ["Science Fiction", "Sci-Fi"], ["Thriller", "Thriller"], ["War", "War"], ["Western", "Western"]] as const;
 const eraOptions = [["recent", "2020s"], ["2010s", "2010s"], ["2000s", "2000s"], ["1990s", "1990s"], ["1980s", "1980s"], ["1970s", "1970s"], ["1960s", "1960s"], ["pre1960", "Before 1960"]] as const;
 const watchProviderOptions = [
   { label: "Apple TV", ids: [350] },
@@ -717,7 +720,7 @@ export default function App() {
     {addOpen && <AddMovieDialog query={addQuery} setQuery={setAddQuery} results={addResults} onClose={() => setAddOpen(false)} onWatched={(movie) => { markWatched(movie); setAddOpen(false); }} onSave={(movie) => { saveMovie(movie, false); setAddOpen(false); }} />}
     {importOpen && <ImportDialog rows={importRows} resolving={importResolving} onResolve={resolveImportRow} onClose={() => setImportOpen(false)} onConfirm={confirmImport} />}
     {reviewConsentPrompt && <ConsentDialog onDecline={() => { setReviewConsentAsked(true); setReviewAnalysisStatus((current) => ({ ...current, [reviewConsentPrompt.id]: "Review saved without analysis." })); setReviewConsentPrompt(null); }} onAccept={() => { setReviewConsent(true); setReviewConsentAsked(true); void runReviewAnalysis(reviewConsentPrompt); setReviewConsentPrompt(null); }} />}
-    {tourOpen && <OnboardingTour slide={tourSlide} setSlide={setTourSlide} onClose={closeTour} preferences={preferences} onPreference={applyPreference} sprintMovie={sprintMovie} sprintLoading={sprintLoading} sprintDecisions={tasteDecisions} onSprintAnswer={answerSprint} onRetrySprint={refillSprint} />}
+    {tourOpen && <OnboardingTour slide={tourSlide} setSlide={setTourSlide} onClose={closeTour} preferences={preferences} onPreference={applyPreference} onFavorite={applyFavorite} sprintMovie={sprintMovie} sprintLoading={sprintLoading} sprintDecisions={tasteDecisions} onSprintAnswer={answerSprint} onRetrySprint={refillSprint} />}
   </div>;
 }
 
@@ -801,22 +804,67 @@ function ExpandedResultCard({ result, rank, saved, onOpen, onWatched, onSave }: 
   </article>;
 }
 
-function TasteView(props: { movie?: Movie; loading: boolean; error: string; decisions: number; watchlist: WatchlistMap; ratings: RatingMap; signals: Array<{ label: string; weight: number; evidence: number }>; events: LearningEvent[]; preferences: OnboardingPreferences; similarityPoints: ReturnType<typeof buildSimilarityMap>; onAnswer: (movie: Movie, value: InterestValue) => void; onWatched: (movie: Movie) => void; onSave: (movie: Movie) => void; onRetry: () => void; onUndo: (event: LearningEvent) => void; onPreference: (kind: "genres" | "directors" | "actors", value: string) => void; onFavorite: (movie: Movie) => void }) {
-  const [preferenceDraft, setPreferenceDraft] = useState({ genres: "", directors: "", actors: "" });
-  const [favoriteQuery, setFavoriteQuery] = useState("");
-  const [favoriteResults, setFavoriteResults] = useState<Movie[]>([]);
+function GenrePreferenceSelect({ values, onToggle }: { values: string[]; onToggle: (genre: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    if (favoriteQuery.trim().length < 2) { setFavoriteResults([]); return; }
+    if (!open) return;
+    const closeOutside = (event: MouseEvent) => {
+      if (event.target instanceof Node && !rootRef.current?.contains(event.target)) setOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === "Escape") setOpen(false); };
+    document.addEventListener("click", closeOutside);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => { document.removeEventListener("click", closeOutside); document.removeEventListener("keydown", closeOnEscape); };
+  }, [open]);
+  return <div className="genre-preference" ref={rootRef}><button type="button" className={values.length ? "preference-picker-trigger is-active" : "preference-picker-trigger"} aria-expanded={open} onClick={() => setOpen((current) => !current)}>Choose genres{values.length ? ` · ${values.length}` : ""}<Icon name="chevron" /></button>{open && <div className="genre-preference-menu"><div>{genreOptions.map(([value, label]) => <label key={value}><input type="checkbox" checked={values.includes(value)} onChange={() => onToggle(value)} />{label}</label>)}</div><button type="button" className="text-action" onClick={() => setOpen(false)}>Done</button></div>}</div>;
+}
+
+type PreferenceSearchKind = "actors" | "directors" | "movies";
+
+function PreferenceSearchPicker(props: { kind: "actors" | "directors"; selected: string[]; onToggle: (name: string) => void } | { kind: "movies"; selected: Movie[]; onToggle: (movie: Movie) => void }) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [people, setPeople] = useState<PersonSearchResult[]>([]);
+  const [movies, setMovies] = useState<Movie[]>([]);
+  const [loading, setLoading] = useState(false);
+  const selectedCount = props.selected.length;
+  const singular = props.kind === "actors" ? "actor" : props.kind === "directors" ? "director" : "movie";
+  const searchPlaceholder = props.kind === "actors" ? "Search for an actor" : `Search for a ${singular}`;
+  const title = props.kind === "actors" ? "Choose actors" : props.kind === "directors" ? "Choose directors" : "Choose favorite movies";
+  useEffect(() => {
+    if (!open || query.trim().length < 2) { setPeople([]); setMovies([]); setLoading(false); return; }
     let cancelled = false;
-    const timeout = window.setTimeout(() => searchMovies(favoriteQuery).then((movies) => { if (!cancelled) setFavoriteResults(movies.slice(0, 5)); }).catch(() => { if (!cancelled) setFavoriteResults([]); }), 260);
+    setLoading(true);
+    const timeout = window.setTimeout(() => {
+      const request = props.kind === "movies"
+        ? searchMovies(query).then((results) => { if (!cancelled) setMovies(results.slice(0, 10)); })
+        : searchPeople(query, props.kind).then((results) => { if (!cancelled) setPeople(results); });
+      request.catch(() => { if (!cancelled) { setPeople([]); setMovies([]); } }).finally(() => { if (!cancelled) setLoading(false); });
+    }, 260);
     return () => { cancelled = true; window.clearTimeout(timeout); };
-  }, [favoriteQuery]);
+  }, [open, props.kind, query]);
+  const close = () => { setOpen(false); setQuery(""); setPeople([]); setMovies([]); };
+  useEffect(() => {
+    if (!open) return;
+    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === "Escape") close(); };
+    document.addEventListener("keydown", closeOnEscape);
+    return () => document.removeEventListener("keydown", closeOnEscape);
+  }, [open]);
+  return <div className="preference-search-picker"><button type="button" className={selectedCount ? "preference-picker-trigger is-active" : "preference-picker-trigger"} onClick={() => setOpen(true)}>Search {props.kind}{selectedCount ? ` · ${selectedCount}` : ""}<Icon name="search" /></button><div className="preference-tags">{props.kind === "movies" ? props.selected.map((movie) => <button type="button" key={movie.id} onClick={() => props.onToggle(movie)}>{movie.title} ×</button>) : props.selected.map((name) => <button type="button" key={name} onClick={() => props.onToggle(name)}>{name} ×</button>)}</div>{open && <div className="preference-picker-backdrop" onMouseDown={close} onTouchStart={(event) => event.stopPropagation()} onTouchEnd={(event) => event.stopPropagation()}><section className="preference-picker-dialog" role="dialog" aria-modal="true" aria-labelledby={`preference-${props.kind}-title`} onMouseDown={(event) => event.stopPropagation()}><div className="sheet-heading"><h2 id={`preference-${props.kind}-title`}>{title}</h2><button type="button" className="icon-button" onClick={close} aria-label={`Close ${singular} search`}>×</button></div><label className="library-search"><Icon name="search"/><input autoFocus value={query} onChange={(event) => setQuery(event.target.value)} placeholder={searchPlaceholder} /></label><div className="preference-search-results">{loading ? <p>Searching…</p> : query.trim().length < 2 ? <p>Type at least two letters to search.</p> : props.kind === "movies" ? movies.length ? movies.map((movie) => { const selected = props.selected.some((item) => item.id === movie.id); return <button type="button" className={selected ? "is-selected" : ""} key={movie.id} onClick={() => props.onToggle(movie)}><span className="preference-result-image">{movie.posterPath ? <img src={posterUrl(movie.posterPath, "w92")} alt=""/> : <i aria-hidden="true">🎬</i>}</span><span><strong>{movie.title}</strong><small>{movie.year} · {movie.genres.slice(0, 2).join(" · ")}</small></span><b>{selected ? "Selected" : "Select"}</b></button>; }) : <p>No matching movies found.</p> : people.length ? people.map((person) => { const selected = props.selected.includes(person.name); return <button type="button" className={selected ? "is-selected" : ""} key={person.id} onClick={() => props.onToggle(person.name)}><span className="preference-result-image">{person.profilePath ? <img src={profileUrl(person.profilePath)} alt=""/> : <i aria-hidden="true">👤</i>}</span><span><strong>{person.name}</strong><small>{[person.department, person.knownFor.join(", ")].filter(Boolean).join(" · ")}</small></span><b>{selected ? "Selected" : "Select"}</b></button>; }) : <p>No matching people found.</p>}</div><button type="button" className="primary-button preference-picker-done" onClick={close}>Done</button></section></div>}</div>;
+}
+
+function PreferenceControls({ preferences, onPreference, onFavorite, compact = false }: { preferences: OnboardingPreferences; onPreference: (kind: "genres" | "directors" | "actors", value: string) => void; onFavorite: (movie: Movie) => void; compact?: boolean }) {
+  return <div className={compact ? "preference-controls is-compact" : "preference-controls"}><div className="preference-control-row"><strong>Genres</strong><GenrePreferenceSelect values={preferences.genres} onToggle={(genre) => onPreference("genres", genre)} /></div><div className="preference-control-row"><strong>Directors you like</strong><PreferenceSearchPicker kind="directors" selected={preferences.directors} onToggle={(name) => onPreference("directors", name)} /></div><div className="preference-control-row"><strong>Actors you like</strong><PreferenceSearchPicker kind="actors" selected={preferences.actors} onToggle={(name) => onPreference("actors", name)} /></div><div className="preference-control-row"><strong>Favorite movies</strong><PreferenceSearchPicker kind="movies" selected={Object.values(preferences.favoriteMovies)} onToggle={onFavorite} /></div></div>;
+}
+
+function TasteView(props: { movie?: Movie; loading: boolean; error: string; decisions: number; watchlist: WatchlistMap; ratings: RatingMap; signals: Array<{ label: string; weight: number; evidence: number }>; events: LearningEvent[]; preferences: OnboardingPreferences; similarityPoints: ReturnType<typeof buildSimilarityMap>; onAnswer: (movie: Movie, value: InterestValue) => void; onWatched: (movie: Movie) => void; onSave: (movie: Movie) => void; onRetry: () => void; onUndo: (event: LearningEvent) => void; onPreference: (kind: "genres" | "directors" | "actors", value: string) => void; onFavorite: (movie: Movie) => void }) {
   return <section className="taste-page page-enter">
     <div className="sprint-section"><div className="section-title-row"><h1>Taste Sprint</h1>{props.decisions < 10 && <div className="sprint-progress" aria-label={`${props.decisions} of 10 onboarding choices`}>{Array.from({ length: 10 }, (_, index) => <i key={index} className={index < props.decisions ? "is-filled" : ""} />)}</div>}</div>
       {props.movie ? <div className="sprint-stage"><img src={posterUrl(props.movie.posterPath, "w500")} alt={`Poster for ${props.movie.title}`} /><div className="sprint-response"><h2>{props.movie.title}</h2><p>{props.movie.year} · {props.movie.genres.slice(0, 2).join(" · ")}</p><button onClick={() => props.onAnswer(props.movie!, "interested")}>Interested</button><button onClick={() => props.onAnswer(props.movie!, "maybe")}>Maybe</button><button onClick={() => props.onAnswer(props.movie!, "notInterested")}>Not for me</button><div className="sprint-secondary"><button onClick={() => props.onWatched(props.movie!)}><Icon name="eye"/>Watched</button><button onClick={() => props.onSave(props.movie!)} disabled={Boolean(props.watchlist[props.movie.id])}><Icon name="bookmark"/>{props.watchlist[props.movie.id] ? "Saved" : "Save"}</button></div></div></div> : <div className="empty-state"><h2>{props.loading ? "Finding another movie…" : "You reached the end of this batch"}</h2>{props.error && <p>{props.error}</p>}{!props.loading && <button className="secondary-button" onClick={props.onRetry}>Load more</button>}</div>}
     </div>
     <div className="taste-lab"><div className="taste-summary"><h2>Your taste</h2>{props.signals.length ? <div className="taste-signals" aria-label="Current taste signals">{props.signals.slice(0, 6).map((signal) => <div className="taste-signal" key={signal.label}><span><strong>{signal.label}</strong><small>{signal.evidence} {signal.evidence === 1 ? "signal" : "signals"}</small></span><i><b style={{ width: `${Math.max(8, signal.weight * 100)}%` }}/></i></div>)}</div> : <p className="empty-copy">Ratings, reactions, and preferences will build your taste summary.</p>}
-      <details className="preference-editor"><summary>Edit preferences</summary>{(["genres", "directors", "actors"] as const).map((kind) => <div className="preference-row" key={kind}><label>{kind[0].toUpperCase() + kind.slice(1)}<span><input value={preferenceDraft[kind]} onChange={(event) => setPreferenceDraft((current) => ({ ...current, [kind]: event.target.value }))} /><button onClick={() => { props.onPreference(kind, preferenceDraft[kind]); setPreferenceDraft((current) => ({ ...current, [kind]: "" })); }}>Add</button></span></label><div className="preference-tags">{props.preferences[kind].map((value) => <button key={value} onClick={() => props.onPreference(kind, value)}>{value} ×</button>)}</div></div>)}<div className="preference-row favorite-preference"><label>Favorite movies<span><input value={favoriteQuery} onChange={(event) => setFavoriteQuery(event.target.value)} placeholder="Search titles" /></span></label>{favoriteResults.length > 0 && <div className="favorite-results">{favoriteResults.map((movie) => <button key={movie.id} onClick={() => { props.onFavorite(movie); setFavoriteQuery(""); }}>{movie.title} <small>{movie.year}</small></button>)}</div>}<div className="preference-tags">{Object.values(props.preferences.favoriteMovies).map((movie) => <button key={movie.id} onClick={() => props.onFavorite(movie)}>{movie.title} ×</button>)}</div></div></details>
+      <details className="preference-editor"><summary>Edit preferences</summary><PreferenceControls preferences={props.preferences} onPreference={props.onPreference} onFavorite={props.onFavorite} /></details>
       <details className="movie-map"><summary>See movie map</summary>{props.decisions >= 3 || props.preferences.genres.length + props.preferences.directors.length + props.preferences.actors.length >= 2 ? <><p>These are your 24 strongest current candidates. Horizontal position is release year; vertical position is the recommendation score built from your reactions, preferences, movie metadata, and quality signals.</p><div className="map-chart"><span className="map-y map-y-top">Stronger fit</span><span className="map-y map-y-bottom">Weaker fit</span><div className="map-field">{props.similarityPoints.points.map((point) => <button key={point.movie.id} aria-label={`${point.movie.title}, ${point.movie.year}, ${point.fitPercent}% recommendation fit`} style={{ left: `${point.x}%`, top: `${point.y}%` }} className="map-dot"><span>{point.movie.title}<small>{point.movie.year} · {point.fitPercent}% fit</small></span></button>)}</div><div className="map-x"><span>{props.similarityPoints.oldestYear || "Older"}</span><strong>Release year</strong><span>{props.similarityPoints.newestYear || "Newer"}</span></div></div><small>Fit is relative to your current private taste profile; positions update as you react and rate.</small></> : <p className="map-not-ready">Add at least two preferences or complete three Taste Sprint choices to create a meaningful map.</p>}</details></div>
       <div className="learning-log"><h2>Recently learned</h2>{props.events.slice(-6).reverse().map((event) => <div className="learning-row" key={event.id}><img src={posterUrl(event.movie.posterPath, "w92")} alt=""/><span><strong>{event.movie.title}</strong><small>{event.type === "rating" && props.ratings[event.movie.id] ? <StarRating value={props.ratings[event.movie.id]} readOnly compact /> : event.label}</small></span>{event.undoKey && <button onClick={() => props.onUndo(event)}>Undo</button>}</div>)}{!props.events.length && <p className="empty-copy">Your reactions will appear here.</p>}</div>
     </div>
@@ -868,13 +916,11 @@ function ConsentDialog({ onDecline, onAccept }: { onDecline: () => void; onAccep
   return <div className="modal-backdrop"><section className="compact-dialog consent-dialog" role="dialog" aria-modal="true"><h2>Use reviews to improve your picks?</h2><p>PickAMovie can privately analyze review text into editable taste signals. Your reviews are not shared with other users or used for cross-user learning.</p><div><button className="secondary-button" onClick={onDecline}>Not now</button><button className="primary-button" onClick={onAccept}>Use my reviews</button></div></section></div>;
 }
 
-function OnboardingTour({ slide, setSlide, onClose, preferences, onPreference, sprintMovie, sprintLoading, sprintDecisions, onSprintAnswer, onRetrySprint }: { slide: number; setSlide: (slide: number) => void; onClose: () => void; preferences: OnboardingPreferences; onPreference: (kind: "genres" | "directors" | "actors", value: string) => void; sprintMovie?: Movie; sprintLoading: boolean; sprintDecisions: number; onSprintAnswer: (movie: Movie, value: InterestValue) => void; onRetrySprint: () => void }) {
+function OnboardingTour({ slide, setSlide, onClose, preferences, onPreference, onFavorite, sprintMovie, sprintLoading, sprintDecisions, onSprintAnswer, onRetrySprint }: { slide: number; setSlide: (slide: number) => void; onClose: () => void; preferences: OnboardingPreferences; onPreference: (kind: "genres" | "directors" | "actors", value: string) => void; onFavorite: (movie: Movie) => void; sprintMovie?: Movie; sprintLoading: boolean; sprintDecisions: number; onSprintAnswer: (movie: Movie, value: InterestValue) => void; onRetrySprint: () => void }) {
   const touchStart = useRef<number | null>(null);
-  const [preferenceDraft, setPreferenceDraft] = useState({ directors: "", actors: "" });
-  const onboardingGenres = ["Comedy", "Drama", "Thriller", "Horror", "Romance", "Science Fiction", "Animation"];
   const slides = [
     { title: "Pick something great", caption: "Three recommendations for tonight. Add filters when you need them.", preview: <MiniPick/> },
-    { title: "Start with what you like", caption: "Choose genres and add any directors or actors you already know you enjoy.", preview: <div className="onboarding-preferences"><div className="onboarding-genres">{onboardingGenres.map((genre) => <button key={genre} className={preferences.genres.includes(genre) ? "is-selected" : ""} onClick={() => onPreference("genres", genre)}>{genre}</button>)}</div>{(["directors", "actors"] as const).map((kind) => <div className="onboarding-person" key={kind}><label>{kind === "directors" ? "Directors you like" : "Actors you like"}<span><input value={preferenceDraft[kind]} onChange={(event) => setPreferenceDraft((current) => ({ ...current, [kind]: event.target.value }))} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); onPreference(kind, preferenceDraft[kind]); setPreferenceDraft((current) => ({ ...current, [kind]: "" })); } }} placeholder={kind === "directors" ? "e.g. Greta Gerwig" : "e.g. Daniel Kaluuya"}/><button onClick={() => { onPreference(kind, preferenceDraft[kind]); setPreferenceDraft((current) => ({ ...current, [kind]: "" })); }}>Add</button></span></label><div className="preference-tags">{preferences[kind].map((value) => <button key={value} onClick={() => onPreference(kind, value)}>{value} ×</button>)}</div></div>)}</div> },
+    { title: "Start with what you like", caption: "Choose real genres, people, and movies so your recommendations start with reliable signals.", preview: <div className="onboarding-preferences"><PreferenceControls compact preferences={preferences} onPreference={onPreference} onFavorite={onFavorite} /></div> },
     { title: "Complete your Taste Sprint", caption: `${Math.min(sprintDecisions, 10)} of 10 choices · every reaction shapes your recommendations.`, preview: <div className="onboarding-sprint">{sprintMovie ? <><img src={posterUrl(sprintMovie.posterPath, "w342")} alt={`Poster for ${sprintMovie.title}`}/><div><strong>{sprintMovie.title}</strong><small>{sprintMovie.year} · {sprintMovie.genres.slice(0, 2).join(" · ")}</small>{sprintDecisions < 10 && <><button onClick={() => onSprintAnswer(sprintMovie, "interested")}>Interested</button><button onClick={() => onSprintAnswer(sprintMovie, "maybe")}>Maybe</button><button onClick={() => onSprintAnswer(sprintMovie, "notInterested")}>Not for me</button></>}</div></> : <div className="onboarding-sprint-empty"><p>{sprintLoading ? "Finding a movie…" : "The next movie could not be loaded."}</p>{!sprintLoading && <button className="secondary-button" onClick={onRetrySprint}>Try again</button>}</div>}<div className="onboarding-sprint-progress">{Array.from({ length: 10 }, (_, index) => <i key={index} className={index < sprintDecisions ? "is-filled" : ""}/>)}</div></div> },
     { title: "Keep track", caption: "Save ideas, rate what you’ve watched, and keep everything together.", preview: <MiniLibrary/> },
   ];
