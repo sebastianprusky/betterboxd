@@ -21,8 +21,11 @@ export const genreAliases: Record<string, string> = {
   comedy: "Comedy",
   comedies: "Comedy",
   crime: "Crime",
+  documentary: "Documentary",
+  documentaries: "Documentary",
   drama: "Drama",
   dramas: "Drama",
+  family: "Family",
   fantasy: "Fantasy",
   historical: "History",
   history: "History",
@@ -39,6 +42,9 @@ export const genreAliases: Record<string, string> = {
   "science fiction": "Sci-Fi",
   thriller: "Thriller",
   thrillers: "Thriller",
+  "tv movie": "TV Movie",
+  western: "Western",
+  westerns: "Western",
   war: "War",
 };
 
@@ -58,6 +64,10 @@ export const subjectiveTerms = [
   "thoughtful",
   "weird",
 ];
+
+function normalizeGenreName(name: string) {
+  return name.trim().toLowerCase() === "science fiction" ? "sci-fi" : name.trim().toLowerCase();
+}
 
 const referencePatterns = [
   /\b(?:movies?\s+)?similar\s+to\s+(.+)$/,
@@ -160,7 +170,7 @@ export function shouldUseSemanticRanking(intent: AskIntent) {
 }
 
 export function matchesAskConstraints(movie: { genres: string[]; year: string }, intent: AskIntent) {
-  if (intent.genre && !movie.genres.some((genre) => genre.toLowerCase() === intent.genre?.toLowerCase())) return false;
+  if (intent.genre && !movie.genres.some((genre) => normalizeGenreName(genre) === normalizeGenreName(intent.genre || ""))) return false;
   const year = Number(movie.year);
   if (!Number.isFinite(year)) return true;
   if (intent.yearFrom && year < intent.yearFrom) return false;

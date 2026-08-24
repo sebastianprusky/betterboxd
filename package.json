@@ -7,7 +7,8 @@
     "dev": "vite --host 0.0.0.0",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview --host 0.0.0.0",
-    "test": "npm run test:merge && npm run test:recommendations && npm run test:prompts",
+    "test": "npm run test:genres && npm run test:merge && npm run test:recommendations && npm run test:prompts",
+    "test:genres": "node --experimental-strip-types scripts/verify-genres.mjs",
     "test:merge": "node --experimental-strip-types scripts/verify-account-merge.mjs",
     "test:recommendations": "node --experimental-strip-types scripts/verify-recommendation-first.mjs",
     "test:prompts": "node --experimental-strip-types scripts/verify-prompt-retrieval.mjs"

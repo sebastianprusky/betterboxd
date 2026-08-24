@@ -101,6 +101,7 @@ main { padding-bottom: 4rem; }
 .filter-menu > summary::-webkit-details-marker { display: none; }
 .filter-popover { position: absolute; left: 0; top: calc(100% + .5rem); z-index: 40; min-width: 12rem; padding: .8rem; border: 1px solid var(--line); border-radius: .75rem; background: var(--paper-raised); box-shadow: var(--shadow); animation: pop-in 180ms ease both; }
 .checkbox-options { display: grid; gap: .2rem; }
+.filter-popover.checkbox-options { min-width: 28rem; max-height: min(30rem, calc(100dvh - 10rem)); grid-template-columns: repeat(3, minmax(0, 1fr)); overflow-y: auto; }
 .checkbox-options label, .theater-option { display: flex; align-items: center; gap: .55rem; min-height: 2rem; white-space: nowrap; font-size: .8rem; }
 .runtime-popover { width: min(20rem, calc(100vw - 2rem)); }
 .runtime-values { display: flex; justify-content: space-between; color: var(--muted); font-size: .76rem; font-variant-numeric: tabular-nums; }
@@ -506,6 +507,7 @@ summary { color: var(--accent); cursor: pointer; font-size: .83rem; font-weight:
   .filter-row { flex-wrap: nowrap; justify-content: flex-start; overflow-x: auto; margin-left: -1rem; margin-right: -1rem; padding: 0 1rem .3rem; scrollbar-width: none; }
   .select-filter, .filter-button { flex: 0 0 auto; }
   .provider-popover, .filter-popover { position: fixed; z-index: 60; left: 0; right: 0; top: auto; bottom: 0; width: 100%; border-radius: 1rem 1rem 0 0; padding: 1.25rem 1.25rem calc(1.25rem + env(safe-area-inset-bottom)); }
+  .filter-popover.checkbox-options { min-width: 0; max-height: min(70dvh, 32rem); grid-template-columns: 1fr; }
   .pick-stage { min-height: auto; display: grid; grid-template-columns: 86vw 74vw 74vw; grid-template-areas: "first second third"; align-items: start; gap: 1rem; overflow-x: auto; scroll-snap-type: x mandatory; padding: 0 7vw 1rem; scrollbar-width: none; }
   .pick-stage.is-expanded { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-areas: none; gap: 1.4rem .75rem; overflow: visible; padding: 0 1rem 1rem; scroll-snap-type: none; }
   .expanded-title strong { font-size: .94rem; }

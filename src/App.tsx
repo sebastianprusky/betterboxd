@@ -1,6 +1,7 @@
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties } from "react";
 import { AccountHub } from "./components/AccountHub";
 import { fallbackMovies } from "./data/fallbackMovies";
+import { genreOptions } from "./data/movieGenres";
 import { emptyCloudState, createMergeKey, mergeGuestAndAccountState } from "./services/accountState";
 import { parseMovieCsv, resolveMovieCsvRows, selectCsvMatch, type CsvImportRow } from "./services/csvImport";
 import { explainCollaborativeCandidates, loadCollaborativeModel, scoreCollaborativeCandidates, type CollaborativeModel } from "./services/collaborative";
@@ -97,7 +98,6 @@ const defaultFilters = (): PickFilters => ({
   runtimeMin: 30, runtimeMax: 300, genres: [], eras: [], providerIds: [], includeTheaters: false,
   region: "US",
 });
-const genreOptions = [["Action", "Action"], ["Adventure", "Adventure"], ["Animation", "Animation"], ["Comedy", "Comedy"], ["Crime", "Crime"], ["Documentary", "Documentary"], ["Drama", "Drama"], ["Family", "Family"], ["Fantasy", "Fantasy"], ["History", "History"], ["Horror", "Horror"], ["Music", "Music"], ["Mystery", "Mystery"], ["Romance", "Romance"], ["Science Fiction", "Sci-Fi"], ["Thriller", "Thriller"], ["War", "War"], ["Western", "Western"]] as const;
 const eraOptions = [["recent", "2020s"], ["2010s", "2010s"], ["2000s", "2000s"], ["1990s", "1990s"], ["1980s", "1980s"], ["1970s", "1970s"], ["1960s", "1960s"], ["pre1960", "Before 1960"]] as const;
 const watchProviderOptions = [
   { label: "Apple TV", ids: [350] },

@@ -102,21 +102,3 @@ export const fallbackMovies: Movie[] = [
     keywords: ["anime", "apocalypse", "surreal", "psychological", "identity"],
   },
 ];
-
-export const genreIds: Record<number, string> = {
-  12: "Adventure",
-  14: "Fantasy",
-  16: "Animation",
-  18: "Drama",
-  27: "Horror",
-  28: "Action",
-  35: "Comedy",
-  36: "History",
-  53: "Thriller",
-  80: "Crime",
-  878: "Sci-Fi",
-  9648: "Mystery",
-  10402: "Music",
-  10749: "Romance",
-  10752: "War",
-};

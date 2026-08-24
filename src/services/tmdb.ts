@@ -1,4 +1,5 @@
-import { fallbackMovies, genreIds } from "../data/fallbackMovies";
+import { fallbackMovies } from "../data/fallbackMovies";
+import { genreIds, normalizeMovieGenre } from "../data/movieGenres";
 import type {
   AskPickAMovieResult,
   Movie,
@@ -105,7 +106,7 @@ const mapMovieDetail = (movie: TmdbMovieDetail): Movie => {
     posterPath: movie.poster_path,
     backdropPath: movie.backdrop_path,
     overview: movie.overview || "No overview available yet.",
-    genres: movie.genres?.map((genre) => genre.name) || (movie.genre_ids || []).map((id) => genreIds[id]).filter(Boolean),
+    genres: movie.genres?.map((genre) => genreIds[genre.id] || normalizeMovieGenre(genre.name)) || (movie.genre_ids || []).map((id) => genreIds[id]).filter(Boolean),
     voteAverage: movie.vote_average,
     runtime: movie.runtime,
     director: movie.credits?.crew?.find((person) => person.job === "Director")?.name,
@@ -367,7 +368,7 @@ export async function discoverPickMovies(filters: PickFilters): Promise<Movie[]>
 }
 
 export function matchesPickFilters(movie: Movie, filters: PickFilters) {
-  if (filters.genres.length && !movie.genres.some((genre) => filters.genres.some((selected) => selected.toLowerCase() === genre.toLowerCase()))) return false;
+  if (filters.genres.length && !movie.genres.some((genre) => filters.genres.some((selected) => normalizeMovieGenre(selected).toLowerCase() === normalizeMovieGenre(genre).toLowerCase()))) return false;
   const runtimeConstrained = filters.runtimeMin > 30 || filters.runtimeMax < 300;
   if (runtimeConstrained && (!movie.runtime || movie.runtime < filters.runtimeMin || movie.runtime > filters.runtimeMax)) return false;
   const year = Number(movie.year);
