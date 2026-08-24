@@ -1,5 +1,6 @@
 import { fallbackMovies } from "../data/fallbackMovies";
 import { genreIds, normalizeMovieGenre } from "../data/movieGenres";
+import { isBroadMoviePrompt, personNameRelevance, rankBroadCandidates } from "./candidateQuality";
 import type {
   AskPickAMovieResult,
   Movie,
@@ -40,6 +41,7 @@ type TmdbMovie = {
   overview: string;
   genre_ids?: number[];
   vote_average?: number;
+  vote_count?: number;
   popularity?: number;
   original_language?: string;
 };
@@ -89,6 +91,7 @@ const mapMovie = (movie: TmdbMovie): Movie => ({
   overview: movie.overview || "No overview available yet.",
   genres: (movie.genre_ids || []).map((id) => genreIds[id]).filter(Boolean),
   voteAverage: movie.vote_average,
+  voteCount: movie.vote_count,
   popularity: movie.popularity,
   originalLanguage: movie.original_language,
 });
@@ -108,6 +111,7 @@ const mapMovieDetail = (movie: TmdbMovieDetail): Movie => {
     overview: movie.overview || "No overview available yet.",
     genres: movie.genres?.map((genre) => genreIds[genre.id] || normalizeMovieGenre(genre.name)) || (movie.genre_ids || []).map((id) => genreIds[id]).filter(Boolean),
     voteAverage: movie.vote_average,
+    voteCount: movie.vote_count,
     runtime: movie.runtime,
     director: movie.credits?.crew?.find((person) => person.job === "Director")?.name,
     cast: movie.credits?.cast
@@ -408,7 +412,8 @@ export async function searchMovies(query: string): Promise<Movie[]> {
 
 export async function searchPeople(query: string, kind: "actors" | "directors"): Promise<PersonSearchResult[]> {
   if (!apiKey || query.trim().length < 2) return [];
-  const data = await tmdbFetch(`/search/person?query=${encodeURIComponent(query.trim())}&include_adult=false&page=1`);
+  const trimmedQuery = query.trim();
+  const data = await tmdbFetch(`/search/person?query=${encodeURIComponent(trimmedQuery)}&include_adult=false&page=1`);
   const preferredDepartment = kind === "actors" ? "Acting" : "Directing";
   const people = (data?.results || [])
     .map((person: TmdbPersonSearchResult) => ({
@@ -422,15 +427,16 @@ export async function searchPeople(query: string, kind: "actors" | "directors"):
         .map((credit) => credit.title || credit.name || "")
         .filter(Boolean),
       popularity: person.popularity || 0,
+      nameRelevance: personNameRelevance(trimmedQuery, person.name || ""),
     }))
-    .sort((a: PersonSearchResult & { popularity: number }, b: PersonSearchResult & { popularity: number }) => Number(b.department === preferredDepartment) - Number(a.department === preferredDepartment) || b.popularity - a.popularity)
+    .sort((a: PersonSearchResult & { popularity: number; nameRelevance: number }, b: PersonSearchResult & { popularity: number; nameRelevance: number }) => b.nameRelevance - a.nameRelevance || Number(b.department === preferredDepartment) - Number(a.department === preferredDepartment) || b.popularity - a.popularity)
     .slice(0, 10);
   if (kind === "actors") {
     return people
-      .filter((person: PersonSearchResult & { popularity: number }) => person.department === "Acting")
-      .map(({ popularity: _popularity, ...person }: PersonSearchResult & { popularity: number }) => person);
+      .filter((person: PersonSearchResult & { popularity: number; nameRelevance: number }) => person.department === "Acting")
+      .map(({ popularity: _popularity, nameRelevance: _nameRelevance, ...person }: PersonSearchResult & { popularity: number; nameRelevance: number }) => person);
   }
-  const verified = await Promise.allSettled(people.slice(0, 6).map(async (person: PersonSearchResult & { popularity: number }) => {
+  const verified = await Promise.allSettled(people.slice(0, 6).map(async (person: PersonSearchResult & { popularity: number; nameRelevance: number }) => {
     const credits = await tmdbFetch(`/person/${person.id}/movie_credits?language=en-US`) as TmdbPersonCredits | null;
     const directed = (credits?.crew || [])
       .filter((credit) => credit.job === "Director")
@@ -440,9 +446,12 @@ export async function searchPeople(query: string, kind: "actors" | "directors"):
       .filter((title, index, titles) => titles.indexOf(title) === index)
       .slice(0, 3);
     if (!directed.length) return null;
-    return { id: person.id, name: person.name, department: "Directing", profilePath: person.profilePath, knownFor: directed } satisfies PersonSearchResult;
+    return { id: person.id, name: person.name, department: "Directing", profilePath: person.profilePath, knownFor: directed, popularity: person.popularity, nameRelevance: person.nameRelevance };
   }));
-  return verified.flatMap((result) => result.status === "fulfilled" && result.value ? [result.value] : []);
+  return verified
+    .flatMap((result) => result.status === "fulfilled" && result.value ? [result.value] : [])
+    .sort((a, b) => b.nameRelevance - a.nameRelevance || b.popularity - a.popularity)
+    .map(({ popularity: _popularity, nameRelevance: _nameRelevance, ...person }) => person);
 }
 
 export async function searchMoviesWithDebug(query: string): Promise<SearchWithDebugResult> {
@@ -510,7 +519,7 @@ function filterFallbackMovies(intent: AskIntent) {
   return fallbackMovies.filter((movie) => matchesAskConstraints(movie, intent));
 }
 
-async function discoverAskCandidates(intent: AskIntent): Promise<Movie[]> {
+async function discoverAskCandidates(intent: AskIntent, includeCanonical = false): Promise<Movie[]> {
   if (!apiKey) return filterFallbackMovies(intent);
 
   const params = new URLSearchParams({
@@ -529,13 +538,21 @@ async function discoverAskCandidates(intent: AskIntent): Promise<Movie[]> {
   if (intent.yearFrom) params.set("primary_release_date.gte", `${intent.yearFrom}-01-01`);
   if (intent.yearTo) params.set("primary_release_date.lte", `${intent.yearTo}-12-31`);
 
-  const pages = await Promise.all([1, 2].map((page) => {
-    params.set("page", String(page));
-    return tmdbFetch(`/discover/movie?${params.toString()}`);
+  const popularPages = await Promise.all([1, 2].map((page) => {
+    const pageParams = new URLSearchParams(params);
+    pageParams.set("page", String(page));
+    return tmdbFetch(`/discover/movie?${pageParams.toString()}`);
   }));
-  const results = pages.flatMap((data) => data?.results || []);
+  const canonicalPages = includeCanonical ? await Promise.all([1, 2].map((page) => {
+    const pageParams = new URLSearchParams(params);
+    pageParams.set("page", String(page));
+    pageParams.set("sort_by", "vote_count.desc");
+    pageParams.set("vote_count.gte", "250");
+    return tmdbFetch(`/discover/movie?${pageParams.toString()}`);
+  })) : [];
+  const results = [...canonicalPages, ...popularPages].flatMap((data) => data?.results || []);
   if (!results.length) return filterFallbackMovies(intent);
-  return dedupeMovies(results.map(mapMovie).filter((movie: Movie) => movie.posterPath)).slice(0, 32);
+  return dedupeMovies(results.map(mapMovie).filter((movie: Movie) => movie.posterPath)).slice(0, includeCanonical ? 48 : 32);
 }
 
 type AnchoredCandidates = {
@@ -555,9 +572,9 @@ function intentWithPlan(intent: AskIntent, plan: SearchPlan | null): AskIntent {
   const plannedGenre = plan.genres.map((genre) => genreNameToId[genre.toLowerCase()] ? genre : undefined).find(Boolean);
   return {
     ...intent,
-    genre: plannedGenre || intent.genre,
-    yearFrom: plan.yearFrom || intent.yearFrom,
-    yearTo: plan.yearTo || intent.yearTo,
+    genre: intent.genre || plannedGenre,
+    yearFrom: intent.yearFrom || plan.yearFrom || undefined,
+    yearTo: intent.yearTo || plan.yearTo || undefined,
     sortBy: plan.sortBy === "rating" ? "vote_average.desc"
       : plan.sortBy === "release_date" ? "primary_release_date.desc"
       : intent.sortBy,
@@ -745,15 +762,29 @@ export async function askPickAMovie(query: string): Promise<AskPickAMovieResult>
   const parsedIntent = parseAskIntent(trimmed);
   const plan = await planMovieSearch(trimmed);
   const intent = intentWithPlan(parsedIntent, plan);
+  const broadQuery = isBroadMoviePrompt(trimmed, {
+    referenceTitle: intent.referenceTitle,
+    yearFrom: intent.yearFrom,
+    yearTo: intent.yearTo,
+    resultMode: plan?.resultMode,
+    namedEntityCount: (plan?.companyNames.length || 0) + (plan?.personNames.length || 0),
+  });
 
   try {
+    const broadDiscovery = broadQuery ? discoverAskCandidates(intent, true) : null;
     const [anchored, planned] = await Promise.all([
       discoverAnchoredCandidates(intent),
       discoverPlannedCandidates(plan, intent),
     ]);
-    const discovered = anchored.movies.length || planned.movies.length ? [] : await discoverAskCandidates(intent);
-    const candidates = dedupeMovies([...planned.movies, ...anchored.movies, ...discovered])
+    const discovered = broadDiscovery
+      ? await broadDiscovery
+      : planned.movies.length || anchored.movies.length ? [] : await discoverAskCandidates(intent);
+    const candidatePool = broadQuery
+      ? [...planned.movies.slice(0, 12), ...discovered, ...anchored.movies]
+      : [...planned.movies, ...anchored.movies, ...(planned.movies.length || anchored.movies.length ? [] : discovered)];
+    const candidates = dedupeMovies(candidatePool)
       .filter((movie) => movie.id !== anchored.referenceMovieId)
+      .filter((movie) => matchesAskConstraints(movie, intent))
       .slice(0, 40);
     let semanticMode: "remote" | "local" | "none" = "none";
     const promptScores: Record<number, number> = Object.fromEntries(Object.entries(anchored.promptScores).map(([movieId, score]) => [movieId, planned.movies.length ? Math.min(.79, score) : score]));
@@ -788,15 +819,18 @@ export async function askPickAMovie(query: string): Promise<AskPickAMovieResult>
       }
     });
 
-    const displayReadyMovies = await enrichMovieDisplayDetails(movies, 6);
+    const qualityRanked = broadQuery ? rankBroadCandidates(movies, promptScores, intent.genre) : { movies, promptScores };
+
+    const displayReadyMovies = await enrichMovieDisplayDetails(qualityRanked.movies, 6);
     return {
       movies: displayReadyMovies,
       debug,
       filters: intent.filters,
-      promptScores,
+      promptScores: qualityRanked.promptScores,
       serviceStatus: !apiKey ? "local-fallback" : semanticMode === "remote" ? "full" : "metadata-only",
       explanation: plan?.interpretation || explainAskIntent(intent, semanticMode, anchored.resolvedReferenceTitle),
       resultMode: plan?.resultMode || "curated",
+      broadQuery,
     };
   } catch {
     const candidates = filterFallbackMovies(intent);
@@ -816,6 +850,7 @@ export async function askPickAMovie(query: string): Promise<AskPickAMovieResult>
         ? `I recognized “similar to ${intent.referenceTitle},” but richer reference search was unavailable. These are limited local-catalog matches.`
         : "I used local movie data because the richer search path was unavailable.",
       resultMode: plan?.resultMode || "curated",
+      broadQuery: false,
     };
   }
 }

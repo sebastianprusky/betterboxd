@@ -347,6 +347,8 @@ summary { color: var(--accent); cursor: pointer; font-size: .83rem; font-weight:
 .rating-toast > .poster-open-button img { display: block; width: 3rem; height: 4rem; object-fit: cover; border-radius: .25rem; }
 .rating-toast strong { font-family: var(--serif); }
 .rating-toast .star-rating { margin-top: .2rem; }
+.outcome-actions { display: flex; gap: .45rem; margin-top: .45rem; }
+.outcome-actions button { min-height: 2rem; padding: .35rem .8rem; }
 .star-rating { display: inline-flex; align-items: center; gap: 0; }
 .star-rating button { width: 2.75rem; height: 2.75rem; display: grid; place-items: center; border: 0; border-radius: .5rem; background: transparent; padding: 0; }
 .star-rating button:hover { background: color-mix(in srgb, var(--star) 13%, transparent); }

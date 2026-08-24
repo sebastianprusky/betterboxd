@@ -7,11 +7,13 @@
     "dev": "vite --host 0.0.0.0",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview --host 0.0.0.0",
-    "test": "npm run test:genres && npm run test:merge && npm run test:recommendations && npm run test:prompts",
+    "test": "npm run test:genres && npm run test:merge && npm run test:recommendations && npm run test:prompts && npm run test:candidate-quality && npm run test:outcomes",
     "test:genres": "node --experimental-strip-types scripts/verify-genres.mjs",
     "test:merge": "node --experimental-strip-types scripts/verify-account-merge.mjs",
     "test:recommendations": "node --experimental-strip-types scripts/verify-recommendation-first.mjs",
-    "test:prompts": "node --experimental-strip-types scripts/verify-prompt-retrieval.mjs"
+    "test:prompts": "node --experimental-strip-types scripts/verify-prompt-retrieval.mjs",
+    "test:candidate-quality": "node --experimental-strip-types scripts/verify-candidate-quality.mjs",
+    "test:outcomes": "node --experimental-strip-types scripts/verify-outcome-tracking.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.110.8",

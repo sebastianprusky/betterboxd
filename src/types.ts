@@ -13,6 +13,7 @@ export type Movie = {
   overview: string;
   genres: string[];
   voteAverage?: number;
+  voteCount?: number;
   runtime?: number;
   director?: string;
   cast?: string[];
@@ -70,6 +71,7 @@ export type AskPickAMovieResult = {
   serviceStatus: "full" | "metadata-only" | "local-fallback";
   explanation: string;
   resultMode: "curated" | "collection";
+  broadQuery?: boolean;
 };
 
 export type RatingMap = Record<string, number>;
@@ -94,7 +96,15 @@ export type OnboardingPreferences = {
   favoriteMovies: Record<string, Movie>;
 };
 
-export type PickIntentEvent = { id: string; movie: Movie; createdAt: number };
+export type PickIntentEvent = {
+  id: string;
+  movie: Movie;
+  createdAt: number;
+  rank?: number;
+  score?: number;
+  watchedAt?: number;
+  rating?: number;
+};
 export type LearningEventType = "interest" | "rating" | "watchlist" | "watched" | "pick" | "reviewAspect";
 export type LearningEvent = {
   id: string;
@@ -113,6 +123,7 @@ export type RecommendationEventType =
   | "highRating"
   | "rating"
   | "pick"
+  | "watched"
   | "notForMe";
 export type RecommendationEvent = {
   id: string;
@@ -121,6 +132,9 @@ export type RecommendationEvent = {
   movieTitle: string;
   mode: RecommendationMode;
   score: number;
+  rank?: number;
+  pickId?: string;
+  rating?: number;
   createdAt: number;
 };
 

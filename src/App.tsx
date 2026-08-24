@@ -6,6 +6,7 @@ import { emptyCloudState, createMergeKey, mergeGuestAndAccountState } from "./se
 import { parseMovieCsv, resolveMovieCsvRows, selectCsvMatch, type CsvImportRow } from "./services/csvImport";
 import { explainCollaborativeCandidates, loadCollaborativeModel, scoreCollaborativeCandidates, type CollaborativeModel } from "./services/collaborative";
 import { analyzeReview } from "./services/reviewInsights";
+import { linkPickOutcome, recommendationEvent } from "./services/outcomeTracking";
 import { recommendMovies, type RecommendationResult } from "./services/recommendations";
 import { buildSimilarityMap } from "./services/similarityMap";
 import {
@@ -47,6 +48,7 @@ import type {
   PersonSearchResult,
   PickFilters,
   PickIntentEvent,
+  RecommendationEvent,
   RatingMap,
   ReviewInsightMap,
   ReviewMap,
@@ -69,6 +71,7 @@ const storage = {
   reviewConsentAsked: "pickamovie-review-consent-asked",
   pickIntents: "pickamovie-pick-intents",
   learningEvents: "pickamovie-learning-events",
+  recommendationEvents: "pickamovie-recommendation-events-v1",
   tasteDecisions: "pickamovie-taste-decisions",
   theme: "pickamovie-theme",
   tour: "pickamovie-tour-v2",
@@ -160,6 +163,7 @@ export default function App() {
   });
   const [pickIntents, setPickIntents] = useState<PickIntentEvent[]>(() => readJson(storage.pickIntents, []));
   const [learningEvents, setLearningEvents] = useState<LearningEvent[]>(() => readJson(storage.learningEvents, []));
+  const [recommendationEvents, setRecommendationEvents] = useState<RecommendationEvent[]>(() => readJson(storage.recommendationEvents, []));
   const [tasteDecisions, setTasteDecisions] = useState(() => readJson(storage.tasteDecisions, 0));
   const [catalog, setCatalog] = useState<Movie[]>(() => readJson(storage.cache, fallbackMovies, legacy.cache));
   const [candidateMovies, setCandidateMovies] = useState<Movie[]>([]);
@@ -170,6 +174,7 @@ export default function App() {
   const [promptExplanation, setPromptExplanation] = useState("");
   const [promptScores, setPromptScores] = useState<Record<number, number>>({});
   const [promptResultMode, setPromptResultMode] = useState<"curated" | "collection">("curated");
+  const [promptBroadQuery, setPromptBroadQuery] = useState(false);
   const [expandedResults, setExpandedResults] = useState(false);
   const [pickLoading, setPickLoading] = useState(true);
   const [pickError, setPickError] = useState("");
@@ -180,6 +185,7 @@ export default function App() {
   const [availability, setAvailability] = useState<Record<number, StreamingAvailability>>({});
   const [theaterMovieIds, setTheaterMovieIds] = useState<Set<number> | null>(null);
   const [ratingPromptMovie, setRatingPromptMovie] = useState<Movie | null>(null);
+  const [outcomePrompt, setOutcomePrompt] = useState<PickIntentEvent | null>(null);
   const [sprintQueue, setSprintQueue] = useState<Movie[]>([]);
   const [sprintLoading, setSprintLoading] = useState(false);
   const [sprintError, setSprintError] = useState("");
@@ -211,6 +217,9 @@ export default function App() {
   const mergeKey = useRef(readJson<string>(storage.mergeKey, "", legacy.mergeKey) || createMergeKey());
   const sprintPage = useRef(1);
   const sprintBusy = useRef(false);
+  const sessionStartedAt = useRef(Date.now());
+  const promptedOutcomeIds = useRef(new Set<string>());
+  const recordedImpressions = useRef(new Set<string>());
 
   useEffect(() => { document.documentElement.dataset.theme = theme; writeJson(storage.theme, theme); }, [theme]);
   useEffect(() => { window.scrollTo({ top: 0, behavior: "smooth" }); }, [tab]);
@@ -225,6 +234,7 @@ export default function App() {
   useEffect(() => writeJson(storage.preferences, preferences), [preferences]);
   useEffect(() => writeJson(storage.pickIntents, pickIntents.slice(-100)), [pickIntents]);
   useEffect(() => writeJson(storage.learningEvents, learningEvents.slice(-100)), [learningEvents]);
+  useEffect(() => writeJson(storage.recommendationEvents, recommendationEvents.slice(-300)), [recommendationEvents]);
   useEffect(() => writeJson(storage.tasteDecisions, tasteDecisions), [tasteDecisions]);
   useEffect(() => writeJson(storage.cache, catalog.slice(-260)), [catalog]);
   useEffect(() => writeJson(storage.developer, developerMode), [developerMode]);
@@ -265,6 +275,7 @@ export default function App() {
       setPromptScores({});
       setPromptExplanation("");
       setPromptResultMode("curated");
+      setPromptBroadQuery(false);
       setExpandedResults(false);
       setVisiblePickIds([]);
       setPickLoading(false);
@@ -293,6 +304,7 @@ export default function App() {
         setPromptScores(Object.fromEntries(movies.map((movie) => [movie.id, askResult.promptScores[movie.id] || 0.35])));
         setPromptExplanation(askResult.explanation);
         setPromptResultMode(askResult.resultMode);
+        setPromptBroadQuery(Boolean(askResult.broadQuery));
         if (cancelled) return;
         setCandidateMovies(movies);
         rememberMovies(movies);
@@ -323,10 +335,20 @@ export default function App() {
   const personalizedRanked = useMemo(() => recommendMovies({
     movies: candidateMovies, ratings: deferredRatings, watchlist: deferredWatchlist, watched: deferredWatched, interest: deferredInterest, preferences: deferredPreferences, pickIntents: deferredPickIntents, reviewInsights: deferredReviewInsights, promptScores, collaborativeScores, collaborativeEvidence, mode: "balanced", limit: 30,
   }), [candidateMovies, deferredRatings, deferredWatchlist, deferredWatched, deferredInterest, deferredPreferences, deferredPickIntents, deferredReviewInsights, promptScores, collaborativeScores, collaborativeEvidence]);
-  const ranked = useMemo(() => Object.keys(promptScores).length
-    ? [...personalizedRanked].sort((a, b) => (promptScores[b.movie.id] || 0) - (promptScores[a.movie.id] || 0) || b.score - a.score || (b.movie.popularity || 0) - (a.movie.popularity || 0))
-    : personalizedRanked,
-  [personalizedRanked, promptResultMode, promptScores]);
+  const ranked = useMemo(() => {
+    const base = Object.keys(promptScores).length
+      ? [...personalizedRanked].sort((a, b) => (promptScores[b.movie.id] || 0) - (promptScores[a.movie.id] || 0) || b.score - a.score || (b.movie.popularity || 0) - (a.movie.popularity || 0))
+      : personalizedRanked;
+    const hasTaste = Object.keys(ratings).length + Object.keys(interest).length + Object.keys(preferences.favoriteMovies).length
+      + preferences.genres.length + preferences.actors.length + preferences.directors.length >= 3;
+    if (!promptBroadQuery || !hasTaste || base.length < 4) return base;
+    const thirdPromptScore = promptScores[base[2].movie.id] || 0;
+    const discovery = base.slice(2, 10)
+      .filter((result) => (promptScores[result.movie.id] || 0) >= thirdPromptScore - .1)
+      .sort((a, b) => b.score - a.score)[0];
+    if (!discovery || discovery.movie.id === base[2].movie.id) return base;
+    return [base[0], base[1], discovery, ...base.slice(2).filter((result) => result.movie.id !== discovery.movie.id)];
+  }, [personalizedRanked, promptScores, promptBroadQuery, ratings, interest, preferences]);
 
   useEffect(() => {
     if (!candidateMovies.length) return;
@@ -388,6 +410,17 @@ export default function App() {
     ? eligibleRanked.slice(0, 20)
     : visiblePickIds.map((id) => eligibleRanked.find((result) => result.movie.id === id)).filter(Boolean) as RecommendationResult[],
   [expandedResults, visiblePickIds, eligibleRanked]);
+
+  useEffect(() => {
+    if (!prompt || pickLoading) return;
+    const additions = visibleResults.flatMap((result, index) => {
+      const key = `${prompt.toLowerCase()}|${result.movie.id}`;
+      if (recordedImpressions.current.has(key)) return [];
+      recordedImpressions.current.add(key);
+      return [recommendationEvent("impression", result.movie, result.score, { rank: index + 1 })];
+    });
+    if (additions.length) setRecommendationEvents((current) => [...current, ...additions].slice(-300));
+  }, [pickLoading, prompt, visibleResults]);
   const streamingChecksPending = (filters.providerIds.length > 0 && ranked.slice(0, 15).some((result) => availability[result.movie.id]?.region !== filters.region)) || (filters.includeTheaters && theaterMovieIds === null);
   const tasteRanked = useMemo(() => tab === "taste" ? recommendMovies({
     movies: deferredAllMovies, ratings: deferredRatings, watchlist: deferredWatchlist, watched: deferredWatched, interest: deferredInterest, preferences: deferredPreferences, pickIntents: deferredPickIntents, reviewInsights: deferredReviewInsights, collaborativeScores, collaborativeEvidence,
@@ -456,6 +489,10 @@ export default function App() {
     setLearningEvents((current) => [...current, { id: uid("learn"), type, movie, label, createdAt: Date.now(), undoKey, source }].slice(-100));
   }
 
+  function recordRecommendation(event: RecommendationEvent) {
+    setRecommendationEvents((current) => [...current, event].slice(-300));
+  }
+
   function replacePick(movieId: number) {
     setVisiblePickIds((current) => {
       const index = current.indexOf(movieId);
@@ -472,8 +509,14 @@ export default function App() {
   function markWatched(movie: Movie, fromSprint = false) {
     if (watched[movie.id]) return;
     const wasSaved = Boolean(watchlist[movie.id]);
+    const watchedAt = Date.now();
+    const originatingPick = [...pickIntents].reverse().find((item) => item.movie.id === movie.id);
     touch(`watched:${movie.id}`, `watchlist:${movie.id}`);
-    setWatched((current) => ({ ...current, [movie.id]: { movie, watchedAt: Date.now() } }));
+    setWatched((current) => ({ ...current, [movie.id]: { movie, watchedAt } }));
+    if (originatingPick) {
+      setPickIntents((current) => linkPickOutcome(current, movie.id, { watchedAt }));
+      recordRecommendation(recommendationEvent("watched", movie, originatingPick.score || 0, { rank: originatingPick.rank, pickId: originatingPick.id }));
+    }
     setWatchlist((current) => { const next = { ...current }; delete next[movie.id]; return next; });
     learn("watched", movie, "Marked watched", `watched:${movie.id}:${wasSaved ? "saved" : "unsaved"}`, fromSprint ? "sprint" : "pick");
     setRatingPromptMovie(movie); replacePick(movie.id);
@@ -485,12 +528,20 @@ export default function App() {
     if (rating === null) {
       setRatings((current) => { const next = { ...current }; delete next[movie.id]; return next; });
       setLearningEvents((current) => current.filter((event) => !(event.type === "rating" && event.movie.id === movie.id)));
+      setPickIntents((current) => linkPickOutcome(current, movie.id, { rating: undefined }));
+      setRecommendationEvents((current) => current.filter((event) => event.movieId !== movie.id || (event.type !== "rating" && event.type !== "highRating")));
       return;
     }
+    const originatingPick = [...pickIntents].reverse().find((item) => item.movie.id === movie.id);
     setRatings((current) => ({ ...current, [movie.id]: rating }));
     setWatched((current) => ({ ...current, [movie.id]: current[movie.id] || { movie, watchedAt: Date.now() } }));
     setLearningEvents((current) => current.filter((event) => !(event.type === "rating" && event.movie.id === movie.id)));
     learn("rating", movie, `Rated ${formatRating(rating)} out of 5`, `rating:${movie.id}`);
+    if (originatingPick) {
+      setPickIntents((current) => linkPickOutcome(current, movie.id, { rating, watchedAt: originatingPick.watchedAt || Date.now() }));
+      setRecommendationEvents((current) => current.filter((event) => event.movieId !== movie.id || (event.type !== "rating" && event.type !== "highRating")));
+      recordRecommendation(recommendationEvent(rating >= 4 ? "highRating" : "rating", movie, originatingPick.score || 0, { rank: originatingPick.rank, pickId: originatingPick.id, rating }));
+    }
   }
 
   function saveMovie(movie: Movie, replace = true) {
@@ -507,12 +558,27 @@ export default function App() {
 
   function chooseMovie(result: RecommendationResult) {
     const movie = result.movie;
-    const event = { id: uid("pick"), movie, createdAt: Date.now() };
+    const rank = Math.max(1, visibleResults.findIndex((item) => item.movie.id === movie.id) + 1);
+    const event: PickIntentEvent = { id: uid("pick"), movie, createdAt: Date.now(), rank, score: result.score };
     const learningEvent: LearningEvent = { id: uid("learn"), type: "pick", movie, label: "Picked for tonight", createdAt: Date.now(), undoKey: `pick:${event.id}`, source: "pick" };
     setPickIntents((current) => [...current.filter((item) => item.movie.id !== movie.id), event].slice(-100));
     setLearningEvents((current) => [...current.filter((item) => !(item.type === "pick" && item.movie.id === movie.id)), learningEvent].slice(-100));
+    recordRecommendation(recommendationEvent("pick", movie, result.score, { rank, pickId: event.id }));
     setSelectedPick(result);
   }
+
+  useEffect(() => {
+    if (tourOpen || ratingPromptMovie || outcomePrompt) return;
+    const timeout = window.setTimeout(() => {
+      const pending = [...pickIntents].reverse().find((item) => item.createdAt < sessionStartedAt.current
+        && !item.watchedAt && item.rating === undefined && !watched[item.movie.id]
+        && !promptedOutcomeIds.current.has(item.id));
+      if (!pending) return;
+      promptedOutcomeIds.current.add(pending.id);
+      setOutcomePrompt(pending);
+    }, 1200);
+    return () => window.clearTimeout(timeout);
+  }, [outcomePrompt, pickIntents, ratingPromptMovie, tourOpen, watched]);
 
   function showMore() { setExpandedResults((current) => !current); }
 
@@ -561,6 +627,8 @@ export default function App() {
     if (kind === "watched") {
       setWatched((current) => { const next = { ...current }; delete next[id]; return next; });
       if (previous === "saved") setWatchlist((current) => ({ ...current, [id]: event.movie }));
+      setPickIntents((current) => linkPickOutcome(current, Number(id), { watchedAt: undefined }));
+      setRecommendationEvents((current) => current.filter((item) => item.movieId !== Number(id) || item.type !== "watched"));
     }
     if (kind === "rating") setRatings((current) => { const next = { ...current }; delete next[id]; return next; });
     if (kind === "pick") setPickIntents((current) => current.filter((item) => item.id !== id));
@@ -572,6 +640,8 @@ export default function App() {
   }
 
   async function openMovie(movie: Movie) {
+    const visibleRank = visibleResults.findIndex((result) => result.movie.id === movie.id);
+    if (visibleRank >= 0) recordRecommendation(recommendationEvent("open", movie, visibleResults[visibleRank].score, { rank: visibleRank + 1 }));
     setDetailMovie(movie); setDetailLoading(true);
     try { const detail = await getMovieDetails(movie); setDetailMovie(detail); rememberMovies([detail]); }
     catch { setDetailMovie(movie); }
@@ -728,6 +798,7 @@ export default function App() {
     <nav className="mobile-nav" aria-label="Primary">{(["pick", "taste", "library"] as Tab[]).map((item) => <button key={item} className={tab === item ? "is-active" : ""} onClick={() => setTab(item)}><span className="mobile-nav-dot" />{item[0].toUpperCase() + item.slice(1)}</button>)}</nav>
 
     {selectedPick && <SelectedPick result={selectedPick} availability={availability[selectedPick.movie.id]} onBack={() => setSelectedPick(null)} onWatched={() => { markWatched(selectedPick.movie); setSelectedPick(null); }} onOpen={() => openMovie(selectedPick.movie)} />}
+    {outcomePrompt && <OutcomePrompt movie={outcomePrompt.movie} onWatched={() => { setOutcomePrompt(null); markWatched(outcomePrompt.movie); }} onNotYet={() => setOutcomePrompt(null)} onOpen={() => openMovie(outcomePrompt.movie)} />}
     {ratingPromptMovie && <RatingPrompt movie={ratingPromptMovie} value={ratings[ratingPromptMovie.id]} onRate={(value) => rateMovie(ratingPromptMovie, value)} onDismiss={() => setRatingPromptMovie(null)} onOpen={() => openMovie(ratingPromptMovie)} />}
     {detailMovie && <MovieDetail movie={detailMovie} loading={detailLoading} rating={ratings[detailMovie.id]} watched={Boolean(watched[detailMovie.id])} saved={Boolean(watchlist[detailMovie.id])} rejected={interest[detailMovie.id]?.value === "notInterested"} review={reviews[detailMovie.id] || ""} aspects={reviewInsights[detailMovie.id] || []} reviewStatus={reviewAnalysisStatus[detailMovie.id] || ""}
       onClose={() => setDetailMovie(null)} onRate={(value) => rateMovie(detailMovie, value)} onWatched={() => markWatched(detailMovie)} onSave={() => watchlist[detailMovie.id] ? removeFromWatchlist(detailMovie) : saveMovie(detailMovie, false)} onRestore={() => restoreMovie(detailMovie)} onReview={(value) => updateReview(detailMovie, value)} onUpdateAspect={(id, label, sentiment) => updateAspect(detailMovie.id, id, label, sentiment)} onRemoveAspect={(id) => removeAspect(detailMovie.id, id)} />}
@@ -910,6 +981,10 @@ function StarRating({ value, onChange, readOnly = false, compact = false }: { va
 
 function RatingPrompt({ movie, value, onRate, onDismiss, onOpen }: { movie: Movie; value?: number; onRate: (rating: number) => void; onDismiss: () => void; onOpen: () => void }) {
   return <aside className="rating-toast" aria-live="polite"><button type="button" className="poster-open-button" onClick={onOpen} aria-label={`View details for ${movie.title}`}><img src={posterUrl(movie.posterPath, "w92")} alt=""/></button><div><strong>How was {movie.title}?</strong><StarRating value={value} onChange={onRate} /></div><button className="toast-close" onClick={onDismiss} aria-label={value ? "Done rating" : "Skip rating"}>×</button></aside>;
+}
+
+function OutcomePrompt({ movie, onWatched, onNotYet, onOpen }: { movie: Movie; onWatched: () => void; onNotYet: () => void; onOpen: () => void }) {
+  return <aside className="rating-toast outcome-toast" aria-live="polite"><button type="button" className="poster-open-button" onClick={onOpen} aria-label={`View details for ${movie.title}`}><img src={posterUrl(movie.posterPath, "w92")} alt=""/></button><div><strong>Did you watch {movie.title}?</strong><div className="outcome-actions"><button className="primary-button" onClick={onWatched}>Yes</button><button className="secondary-button" onClick={onNotYet}>Not yet</button></div></div><button className="toast-close" onClick={onNotYet} aria-label="Dismiss follow-up">×</button></aside>;
 }
 
 function MovieDetail(props: { movie: Movie; loading: boolean; rating?: number; watched: boolean; saved: boolean; rejected: boolean; review: string; reviewStatus: string; aspects: ReviewInsightMap[string]; onClose: () => void; onRate: (value: number | null) => void; onWatched: () => void; onSave: () => void; onRestore: () => void; onReview: (value: string) => void; onUpdateAspect: (id: string, label: string, sentiment: "positive" | "negative") => void; onRemoveAspect: (id: string) => void }) {

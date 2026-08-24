@@ -9,6 +9,8 @@ type Movie = {
   overview: string;
   genres: string[];
   voteAverage?: number;
+  voteCount?: number;
+  popularity?: number;
   runtime?: number;
   director?: string;
   cast?: string[];
@@ -162,6 +164,8 @@ function sanitizeMovie(value: unknown): Movie | null {
       .map((genre) => limitText(genre, maxGenreLength))
       .filter(Boolean),
     voteAverage: typeof value.voteAverage === "number" ? value.voteAverage : undefined,
+    voteCount: typeof value.voteCount === "number" ? value.voteCount : undefined,
+    popularity: typeof value.popularity === "number" ? value.popularity : undefined,
     runtime: typeof value.runtime === "number" ? value.runtime : undefined,
     director: limitText(value.director, maxDirectorLength) || undefined,
     cast: Array.isArray(value.cast)
