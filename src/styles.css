@@ -76,7 +76,7 @@ main { padding-bottom: 4rem; }
 
 /* Pick */
 .pick-page { max-width: 1440px; margin: 0 auto; padding: .6rem clamp(1rem, 3.5vw, 3.6rem) 2rem; }
-.pick-controls { max-width: 760px; margin: 0 auto 1.6rem; transform: translateY(0); transition: transform 460ms cubic-bezier(.22, 1, .36, 1); }
+.pick-controls { position: relative; z-index: 30; max-width: 760px; margin: 0 auto 1.6rem; transform: translateY(0); transition: transform 460ms cubic-bezier(.22, 1, .36, 1); }
 .pick-page.is-empty { min-height: calc(100dvh - 6rem); }
 .pick-page.is-empty .pick-controls { transform: translateY(clamp(8rem, 26dvh, 15rem)); }
 .prompt-field { min-height: 3.25rem; display: flex; align-items: center; gap: .75rem; border: 1px solid var(--line); border-radius: .72rem; padding: 0 1rem; background: color-mix(in srgb, var(--paper-raised) 52%, transparent); transition: border 180ms ease, box-shadow 180ms ease; }
@@ -93,7 +93,7 @@ main { padding-bottom: 4rem; }
 .provider-filter, .filter-menu { position: relative; }
 .filter-menu > summary { cursor: pointer; list-style: none; }
 .filter-menu > summary::-webkit-details-marker { display: none; }
-.filter-popover { position: absolute; left: 0; top: calc(100% + .5rem); z-index: 20; min-width: 12rem; padding: .8rem; border: 1px solid var(--line); border-radius: .75rem; background: var(--paper-raised); box-shadow: var(--shadow); animation: pop-in 180ms ease both; }
+.filter-popover { position: absolute; left: 0; top: calc(100% + .5rem); z-index: 40; min-width: 12rem; padding: .8rem; border: 1px solid var(--line); border-radius: .75rem; background: var(--paper-raised); box-shadow: var(--shadow); animation: pop-in 180ms ease both; }
 .checkbox-options { display: grid; gap: .2rem; }
 .checkbox-options label, .theater-option { display: flex; align-items: center; gap: .55rem; min-height: 2rem; white-space: nowrap; font-size: .8rem; }
 .runtime-popover { width: min(20rem, calc(100vw - 2rem)); }
@@ -106,19 +106,18 @@ main { padding-bottom: 4rem; }
 .dual-range input::-moz-range-track { height: 3px; background: transparent; }
 .dual-range input::-moz-range-thumb { width: .8rem; height: .8rem; border: 2px solid var(--paper-raised); border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 1px var(--accent); pointer-events: auto; cursor: grab; }
 .runtime-popover .text-action { display: block; margin: 0 auto; font-size: .74rem; }
-.provider-popover { position: absolute; right: 0; top: calc(100% + .5rem); z-index: 20; width: min(21rem, calc(100vw - 2rem)); padding: 1rem; border: 1px solid var(--line); border-radius: .85rem; background: var(--paper-raised); box-shadow: var(--shadow); animation: pop-in 180ms ease both; }
+.provider-popover { position: absolute; right: 0; top: calc(100% + .5rem); z-index: 40; width: min(21rem, calc(100vw - 2rem)); padding: 1rem; border: 1px solid var(--line); border-radius: .85rem; background: var(--paper-raised); box-shadow: var(--shadow); animation: pop-in 180ms ease both; }
 @keyframes pop-in { from { opacity: 0; transform: translateY(-5px) scale(.985); } }
 .provider-popover > label { display: flex; justify-content: space-between; align-items: center; font-size: .83rem; font-weight: 600; }
 .provider-popover select { border: 1px solid var(--line); border-radius: .45rem; background: var(--paper); padding: .35rem .5rem; }
 .provider-options { display: grid; grid-template-columns: 1fr; gap: .25rem; max-height: 22rem; overflow: auto; }
 .provider-options label { display: flex; align-items: center; gap: .5rem; min-height: 2rem; font-size: .78rem; }
-.provider-options .anywhere-option { padding-bottom: .35rem; margin-bottom: .1rem; border-bottom: 1px solid var(--line); font-weight: 700; }
 .provider-popover small { color: var(--muted); }
 .provider-empty { color: var(--muted); font-size: .78rem; margin: .9rem 0; }
 .prompt-explanation { margin: .7rem auto 0; max-width: 65ch; color: var(--muted); text-align: center; font-size: .76rem; text-wrap: pretty; }
 .quiet-notice { text-align: center; color: var(--muted); font-size: .85rem; }
-.pick-stage { min-height: 620px; display: grid; grid-template-columns: minmax(0, .88fr) minmax(0, 1.08fr) minmax(0, .88fr); grid-template-areas: "second first third"; gap: clamp(1rem, 3vw, 3.4rem); align-items: start; }
-.pick-card { min-width: 0; display: grid; grid-template-rows: 1.7rem 450px auto auto; align-content: start; animation: card-in 210ms ease both; }
+.pick-stage { position: relative; z-index: 1; min-height: 620px; display: grid; grid-template-columns: minmax(0, .88fr) minmax(0, 1.08fr) minmax(0, .88fr); grid-template-areas: "second first third"; gap: clamp(1rem, 3vw, 3.4rem); align-items: start; }
+.pick-card { min-width: 0; display: grid; grid-template-rows: 477px auto auto; align-content: start; animation: card-in 210ms ease both; }
 .pick-card.rank-1 { grid-area: first; }
 .pick-card.rank-2 { grid-area: second; }
 .pick-card.rank-3 { grid-area: third; }
@@ -135,9 +134,10 @@ main { padding-bottom: 4rem; }
 .expanded-result-card > div { display: flex; gap: .8rem; }
 .expanded-result-card > div .text-action { font-size: .7rem; }
 @keyframes card-in { from { opacity: 0; transform: translateY(10px); } }
-.rank-label { height: 1.7rem; display: flex; align-items: center; justify-content: center; color: var(--accent); font-family: var(--serif); font-size: .9rem; }
+.ranked-poster { min-width: 0; height: 477px; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; }
+.rank-label { flex: 0 0 1.45rem; height: 1.45rem; margin-bottom: .12rem; display: flex; align-items: center; justify-content: center; color: var(--accent); font-family: var(--serif); font-size: .9rem; }
 .rank-label span { width: 1.45rem; height: 1.45rem; display: grid; place-items: center; border: 1px solid color-mix(in srgb, var(--accent) 58%, transparent); border-radius: 50%; }
-.pick-poster { width: auto; max-width: 100%; height: min(410px, calc(100dvh - 430px)); min-height: 260px; align-self: end; aspect-ratio: 2 / 3; margin: 0 auto; object-fit: cover; border-radius: .62rem; box-shadow: 0 14px 32px rgba(55, 37, 30, .14); transition: transform 200ms ease, box-shadow 200ms ease; }
+.pick-poster { flex: 0 0 auto; width: auto; max-width: 100%; height: min(410px, calc(100dvh - 430px)); min-height: 260px; aspect-ratio: 2 / 3; margin: 0 auto; object-fit: cover; border-radius: .62rem; box-shadow: 0 14px 32px rgba(55, 37, 30, .14); transition: transform 200ms ease, box-shadow 200ms ease; }
 .rank-1 .pick-poster { height: min(450px, calc(100dvh - 410px)); }
 .pick-card:hover .pick-poster { transform: translateY(-2px); box-shadow: 0 19px 38px rgba(55, 37, 30, .18); }
 .pick-copy { text-align: center; padding: .8rem .2rem 0; }
@@ -423,7 +423,8 @@ summary { color: var(--accent); cursor: pointer; font-size: .83rem; font-weight:
   .pick-controls { margin-bottom: .7rem; }
   .prompt-field { min-height: 2.8rem; }
   .filter-row { margin-top: .55rem; }
-  .pick-card { grid-template-rows: 1.7rem 255px auto auto; }
+  .pick-card { grid-template-rows: 282px auto auto; }
+  .ranked-poster { height: 282px; }
   .skeleton-card { grid-template-rows: 255px auto auto; }
   .pick-poster { height: 230px; min-height: 0; }
   .rank-1 .pick-poster { height: 255px; }
@@ -457,7 +458,8 @@ summary { color: var(--accent); cursor: pointer; font-size: .83rem; font-weight:
   .pick-stage { min-height: auto; display: grid; grid-template-columns: 86vw 74vw 74vw; grid-template-areas: "first second third"; align-items: start; gap: 1rem; overflow-x: auto; scroll-snap-type: x mandatory; padding: 0 7vw 1rem; scrollbar-width: none; }
   .pick-stage.is-expanded { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-areas: none; gap: 1.4rem .75rem; overflow: visible; padding: 0 1rem 1rem; scroll-snap-type: none; }
   .expanded-title strong { font-size: .94rem; }
-  .pick-card { grid-template-rows: 1.7rem 300px auto auto; scroll-snap-align: center; }
+  .pick-card { grid-template-rows: 327px auto auto; scroll-snap-align: center; }
+  .ranked-poster { height: 327px; }
   .skeleton-card { grid-template-rows: 300px auto auto; }
   .pick-poster, .rank-1 .pick-poster { max-height: none; }
   .pick-poster, .rank-1 .pick-poster { width: auto; max-width: 100%; height: min(31dvh, 300px); min-height: 0; }

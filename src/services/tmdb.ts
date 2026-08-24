@@ -25,6 +25,7 @@ const apiBase = "https://api.themoviedb.org/3";
 const providerCacheKey = "pickamovie-provider-cache-v1";
 const providerCacheTtl = 6 * 60 * 60 * 1000;
 const movieDetailCache = new Map<number, Promise<Movie>>();
+const movieDisplayDetailCache = new Map<number, Promise<Movie>>();
 
 type TmdbMovie = {
   id: number;
@@ -723,8 +724,9 @@ export async function askPickAMovie(query: string): Promise<AskPickAMovieResult>
       }
     });
 
+    const displayReadyMovies = await enrichMovieDisplayDetails(movies, 6);
     return {
-      movies,
+      movies: displayReadyMovies,
       debug,
       filters: intent.filters,
       promptScores,
@@ -765,6 +767,30 @@ export async function getMovieDetails(movie: Movie): Promise<Movie> {
     });
   movieDetailCache.set(movie.id, request);
   return request;
+}
+
+export async function getMovieDisplayDetails(movie: Movie): Promise<Movie> {
+  if (movie.runtime) return movie;
+  const cached = movieDisplayDetailCache.get(movie.id);
+  if (cached) return cached;
+  const request = tmdbFetch(`/movie/${movie.id}?language=en-US`)
+    .then((data) => data?.runtime ? { ...movie, runtime: data.runtime } : movie)
+    .catch((error) => {
+      movieDisplayDetailCache.delete(movie.id);
+      throw error;
+    });
+  movieDisplayDetailCache.set(movie.id, request);
+  return request;
+}
+
+async function enrichMovieDisplayDetails(movies: Movie[], limit: number) {
+  if (!apiKey) return movies;
+  const enriched = await Promise.allSettled(movies.slice(0, limit).map(getMovieDisplayDetails));
+  const enrichedById = new Map<number, Movie>();
+  enriched.forEach((result) => {
+    if (result.status === "fulfilled") enrichedById.set(result.value.id, result.value);
+  });
+  return movies.map((movie) => enrichedById.get(movie.id) || movie);
 }
 
 async function enrichMovies(movies: Movie[], limit: number) {

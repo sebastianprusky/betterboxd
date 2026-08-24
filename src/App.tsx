@@ -9,6 +9,7 @@ import { recommendMovies, type RecommendationResult } from "./services/recommend
 import { buildSimilarityMap } from "./services/similarityMap";
 import {
   getMovieDetails,
+  getMovieDisplayDetails,
   getMovieWatchProviders,
   getNowPlayingMovieIds,
   getRecommendationCatalog,
@@ -104,7 +105,6 @@ const watchProviderOptions = [
   { label: "HBO Max", ids: [1899] },
   { label: "Paramount+", ids: [2303, 2616] },
 ] as const;
-const allWatchProviderIds = [...new Set(watchProviderOptions.flatMap((provider) => provider.ids))];
 const ratingChoices = Array.from({ length: 10 }, (_, index) => (index + 1) / 2);
 
 function readJson<T>(key: string, fallback: T, oldKeys: string[] = []): T {
@@ -322,6 +322,25 @@ export default function App() {
     ? [...personalizedRanked].sort((a, b) => (promptScores[b.movie.id] || 0) - (promptScores[a.movie.id] || 0) || b.score - a.score || (b.movie.popularity || 0) - (a.movie.popularity || 0))
     : personalizedRanked,
   [personalizedRanked, promptResultMode, promptScores]);
+
+  useEffect(() => {
+    if (!candidateMovies.length) return;
+    const displayLimit = expandedResults ? 20 : 3;
+    const missingDetails = candidateMovies.slice(0, displayLimit).filter((movie) => !movie.runtime);
+    if (!missingDetails.length) return;
+    let cancelled = false;
+    Promise.allSettled(missingDetails.map(getMovieDisplayDetails)).then((settled) => {
+      if (cancelled) return;
+      const details = new Map<number, Movie>();
+      settled.forEach((result) => {
+        if (result.status === "fulfilled" && result.value.runtime) details.set(result.value.id, result.value);
+      });
+      if (!details.size) return;
+      setCandidateMovies((current) => current.map((movie) => details.get(movie.id) || movie));
+      rememberMovies([...details.values()]);
+    });
+    return () => { cancelled = true; };
+  }, [candidateMovies, expandedResults, rememberMovies]);
   useEffect(() => {
     if (import.meta.env.DEV && prompt.trim().length >= 3 && ranked.length) {
       console.debug("[pick-ranking] top", JSON.stringify(ranked.slice(0, 8).map((result) => ({ title: result.movie.title, promptScore: promptScores[result.movie.id], score: Number(result.score.toFixed(3)) }))));
@@ -710,18 +729,11 @@ function PickView(props: {
   const filterRowRef = useRef<HTMLDivElement>(null);
   const selectedProviderGroups = watchProviderOptions.filter((provider) => provider.ids.every((id) => props.filters.providerIds.includes(id))).length;
   const selectedWatchLocations = selectedProviderGroups + (props.filters.includeTheaters ? 1 : 0);
-  const anywhereSelected = props.filters.includeTheaters && selectedProviderGroups === watchProviderOptions.length;
   const toggleProviderGroup = (ids: readonly number[]) => props.setFilters((current) => {
     const selected = ids.every((id) => current.providerIds.includes(id));
     const next = new Set(current.providerIds);
     ids.forEach((id) => selected ? next.delete(id) : next.add(id));
     return { ...current, providerIds: [...next] };
-  });
-  const toggleAnywhere = () => props.setFilters((current) => {
-    const allSelected = current.includeTheaters && allWatchProviderIds.every((id) => current.providerIds.includes(id));
-    return allSelected
-      ? { ...current, providerIds: [], includeTheaters: false }
-      : { ...current, providerIds: [...allWatchProviderIds], includeTheaters: true };
   });
   useEffect(() => {
     const closeOutside = (event: PointerEvent) => {
@@ -742,7 +754,7 @@ function PickView(props: {
         <MultiSelectFilter label="Genre" values={props.filters.genres} options={genreOptions} onToggle={(genre) => props.setFilters((current) => ({ ...current, genres: current.genres.includes(genre) ? current.genres.filter((item) => item !== genre) : [...current.genres, genre] }))} />
         <MultiSelectFilter label="Era" values={props.filters.eras} options={eraOptions.map(([value, label]) => [value, label])} onToggle={(era) => props.setFilters((current) => ({ ...current, eras: current.eras.includes(era) ? current.eras.filter((item) => item !== era) : [...current.eras, era] }))} />
         <div className="provider-filter"><button className={selectedWatchLocations ? "filter-button is-active" : "filter-button"} disabled={!props.streamingConfigured} title={props.streamingConfigured ? undefined : "Availability is not configured"} aria-expanded={props.providerOpen} onClick={() => props.setProviderOpen(!props.providerOpen)}>Where to watch{selectedWatchLocations ? ` · ${selectedWatchLocations}` : ""}<Icon name="chevron" /></button>
-          {props.providerOpen && <div className="provider-popover"><div className="provider-options"><label className="anywhere-option"><input type="checkbox" checked={anywhereSelected} onChange={toggleAnywhere} />Anywhere</label><label className="theater-option"><input type="checkbox" checked={props.filters.includeTheaters} onChange={() => props.setFilters((current) => ({ ...current, includeTheaters: !current.includeTheaters }))} />In theaters</label>{watchProviderOptions.map((provider) => <label key={provider.label}><input type="checkbox" checked={provider.ids.every((id) => props.filters.providerIds.includes(id))} onChange={() => toggleProviderGroup(provider.ids)} />{provider.label}</label>)}</div></div>}
+          {props.providerOpen && <div className="provider-popover"><div className="provider-options"><label className="theater-option"><input type="checkbox" checked={props.filters.includeTheaters} onChange={() => props.setFilters((current) => ({ ...current, includeTheaters: !current.includeTheaters }))} />In theaters</label>{watchProviderOptions.map((provider) => <label key={provider.label}><input type="checkbox" checked={provider.ids.every((id) => props.filters.providerIds.includes(id))} onChange={() => toggleProviderGroup(provider.ids)} />{provider.label}</label>)}</div></div>}
         </div>
       </div>
       {props.hasSubmittedPrompt && props.promptExplanation && !props.loading && <p className="prompt-explanation">{props.promptExplanation}</p>}
@@ -773,8 +785,7 @@ function RuntimeFilter({ filters, setFilters }: { filters: PickFilters; setFilte
 function RecommendationCard({ result, rank, availability, expanded, saved, onExpand, onWatched, onSave, onPick, onReject, developerMode }: { result: RecommendationResult; rank: number; availability?: StreamingAvailability; expanded: boolean; saved: boolean; onExpand: () => void; onWatched: () => void; onSave: () => void; onPick: () => void; onReject: () => void; developerMode: boolean }) {
   const provider = availability?.providers[0];
   return <article className={`pick-card rank-${rank}`}>
-    <div className="rank-label"><span>{rank}</span></div>
-    <img className="pick-poster" src={posterUrl(result.movie.posterPath, rank === 1 ? "w500" : "w342")} alt={`Poster for ${result.movie.title}`} />
+    <div className="ranked-poster"><div className="rank-label"><span>{rank}</span></div><img className="pick-poster" src={posterUrl(result.movie.posterPath, rank === 1 ? "w500" : "w342")} alt={`Poster for ${result.movie.title}`} /></div>
     <div className="pick-copy"><h2>{result.movie.title}</h2><div className="movie-meta"><span>{result.movie.year}</span><span>{shortRuntime(result.movie)}</span>{provider && <span className="provider-badge">{provider.name}</span>}</div><button className="reason-line" onClick={onExpand}>{result.reason}<Icon name="chevron" /></button>
       {expanded && <div className="signal-panel">{result.signals.map((signal) => <div className="signal-row" key={signal.label}><div><strong>{signal.label}</strong><span>{signal.detail}</span></div><div className="signal-track"><i style={{ width: `${Math.max(8, signal.value * 100)}%` }} /></div></div>)}<small className="signal-note">Relative contributors, not probabilities.</small>{developerMode && <code>score {result.score.toFixed(3)}</code>}</div>}
     </div>
