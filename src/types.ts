@@ -60,6 +60,7 @@ export type AskPickAMovieResult = {
   promptScores: Record<number, number>;
   serviceStatus: "full" | "metadata-only" | "local-fallback";
   explanation: string;
+  resultMode: "curated" | "collection";
 };
 
 export type RatingMap = Record<string, number>;

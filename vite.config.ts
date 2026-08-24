@@ -3,6 +3,7 @@ import react from "@vitejs/plugin-react";
 import { handleCreatorAccountOverviewRequest } from "./api/creator-account-overview";
 import { handleSemanticSearchRequest } from "./api/semantic-search";
 import { handleReviewInsightsRequest } from "./api/review-insights";
+import { handleSearchPlanRequest } from "./api/search-plan";
 
 declare const process: { env: Record<string, string | undefined> };
 
@@ -65,6 +66,16 @@ function semanticSearchApi(): Plugin {
           body,
         });
         await writeFetchResponse(await handleSemanticSearchRequest(fetchRequest), response as NodeResponse);
+      });
+      server.middlewares.use("/api/search-plan", async (request, response) => {
+        const nodeRequest = request as NodeRequest;
+        const body = nodeRequest.method === "POST" ? await readRequestBody(nodeRequest) : undefined;
+        const fetchRequest = new Request(`http://localhost${nodeRequest.url || "/api/search-plan"}`, {
+          method: nodeRequest.method,
+          headers: nodeRequest.headers as HeadersInit,
+          body,
+        });
+        await writeFetchResponse(await handleSearchPlanRequest(fetchRequest), response as NodeResponse);
       });
       server.middlewares.use("/api/creator-account-overview", async (request, response) => {
         const nodeRequest = request as NodeRequest;

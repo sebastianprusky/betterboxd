@@ -155,6 +155,8 @@ export default function App() {
   const [prompt, setPrompt] = useState("");
   const [promptExplanation, setPromptExplanation] = useState("");
   const [promptScores, setPromptScores] = useState<Record<number, number>>({});
+  const [promptResultMode, setPromptResultMode] = useState<"curated" | "collection">("curated");
+  const [expandedResults, setExpandedResults] = useState(false);
   const [pickLoading, setPickLoading] = useState(true);
   const [pickError, setPickError] = useState("");
   const [visiblePickIds, setVisiblePickIds] = useState<number[]>([]);
@@ -253,6 +255,8 @@ export default function App() {
       setCandidateMovies([]);
       setPromptScores({});
       setPromptExplanation("");
+      setPromptResultMode("curated");
+      setExpandedResults(false);
       setVisiblePickIds([]);
       setPickLoading(false);
       return;
@@ -261,6 +265,7 @@ export default function App() {
     setPickLoading(true);
     setPickError("");
     setPromptExplanation("");
+    setExpandedResults(false);
     setVisiblePickIds([]);
     const timeout = window.setTimeout(async () => {
       try {
@@ -278,6 +283,7 @@ export default function App() {
         }
         setPromptScores(Object.fromEntries(movies.map((movie) => [movie.id, askResult.promptScores[movie.id] || 0.35])));
         setPromptExplanation(askResult.explanation);
+        setPromptResultMode(askResult.resultMode);
         if (cancelled) return;
         setCandidateMovies(movies);
         rememberMovies(movies);
@@ -305,18 +311,27 @@ export default function App() {
 
   const collaborativeScores = useMemo(() => scoreCollaborativeCandidates(collaborativeModel, deferredRatings, candidateMovies), [collaborativeModel, deferredRatings, candidateMovies]);
   const collaborativeEvidence = useMemo(() => explainCollaborativeCandidates(collaborativeModel, deferredRatings, deferredAllMovies), [collaborativeModel, deferredRatings, deferredAllMovies]);
-  const ranked = useMemo(() => recommendMovies({
+  const personalizedRanked = useMemo(() => recommendMovies({
     movies: candidateMovies, ratings: deferredRatings, watchlist: deferredWatchlist, watched: deferredWatched, interest: deferredInterest, preferences: deferredPreferences, pickIntents: deferredPickIntents, reviewInsights: deferredReviewInsights, promptScores, collaborativeScores, collaborativeEvidence, mode: "balanced", limit: 30,
   }), [candidateMovies, deferredRatings, deferredWatchlist, deferredWatched, deferredInterest, deferredPreferences, deferredPickIntents, deferredReviewInsights, promptScores, collaborativeScores, collaborativeEvidence]);
+  const ranked = useMemo(() => Object.keys(promptScores).length
+    ? [...personalizedRanked].sort((a, b) => (promptScores[b.movie.id] || 0) - (promptScores[a.movie.id] || 0) || b.score - a.score || (b.movie.popularity || 0) - (a.movie.popularity || 0))
+    : personalizedRanked,
+  [personalizedRanked, promptResultMode, promptScores]);
+  useEffect(() => {
+    if (import.meta.env.DEV && prompt.trim().length >= 3 && ranked.length) {
+      console.debug("[pick-ranking] top", JSON.stringify(ranked.slice(0, 8).map((result) => ({ title: result.movie.title, promptScore: promptScores[result.movie.id], score: Number(result.score.toFixed(3)) }))));
+    }
+  }, [prompt, promptScores, ranked]);
 
   useEffect(() => {
-    const targets = ranked.slice(0, filters.providerIds.length ? 15 : 6).map((result) => result.movie);
+    const targets = ranked.slice(0, filters.providerIds.length ? 20 : expandedResults ? 20 : 6).map((result) => result.movie);
     if (!targets.length) return;
     let cancelled = false;
     Promise.all(targets.map((movie) => getMovieWatchProviders(movie.id, filters.region).catch(() => ({ movieId: movie.id, region: filters.region, providers: [], checkedAt: Date.now(), status: "unavailable" as const }))))
       .then((items) => { if (!cancelled) setAvailability((current) => ({ ...current, ...Object.fromEntries(items.map((item) => [item.movieId, item])) })); });
     return () => { cancelled = true; };
-  }, [ranked.map((result) => result.movie.id).join(","), filters.providerIds.join(","), filters.region]);
+  }, [ranked.map((result) => result.movie.id).join(","), filters.providerIds.join(","), filters.region, expandedResults]);
 
   const eligibleRanked = useMemo(() => {
     const hasWhereFilter = filters.providerIds.length > 0 || filters.includeTheaters;
@@ -341,7 +356,10 @@ export default function App() {
     });
   }, [eligibleRanked.map((result) => result.movie.id).join(","), visiblePickIds.length]);
 
-  const visibleResults = useMemo(() => visiblePickIds.map((id) => eligibleRanked.find((result) => result.movie.id === id)).filter(Boolean) as RecommendationResult[], [visiblePickIds, eligibleRanked]);
+  const visibleResults = useMemo(() => expandedResults
+    ? eligibleRanked.slice(0, 20)
+    : visiblePickIds.map((id) => eligibleRanked.find((result) => result.movie.id === id)).filter(Boolean) as RecommendationResult[],
+  [expandedResults, visiblePickIds, eligibleRanked]);
   const streamingChecksPending = (filters.providerIds.length > 0 && ranked.slice(0, 15).some((result) => availability[result.movie.id]?.region !== filters.region)) || (filters.includeTheaters && theaterMovieIds === null);
   const tasteRanked = useMemo(() => tab === "taste" ? recommendMovies({
     movies: deferredAllMovies, ratings: deferredRatings, watchlist: deferredWatchlist, watched: deferredWatched, interest: deferredInterest, preferences: deferredPreferences, pickIntents: deferredPickIntents, reviewInsights: deferredReviewInsights, collaborativeScores, collaborativeEvidence,
@@ -467,12 +485,7 @@ export default function App() {
     setSelectedPick(result);
   }
 
-  function showMore() {
-    const current = new Set(visiblePickIds); const lastVisibleId = visiblePickIds[visiblePickIds.length - 1];
-    const start = Math.max(0, eligibleRanked.findIndex((result) => result.movie.id === lastVisibleId) + 1);
-    const next = [...eligibleRanked.slice(start), ...eligibleRanked.slice(0, start)].map((result) => result.movie.id).filter((id) => !current.has(id)).slice(0, 3);
-    setVisiblePickIds(next);
-  }
+  function showMore() { setExpandedResults((current) => !current); }
 
   useEffect(() => {
     const decided = new Set([...Object.keys(interest), ...Object.keys(watched), ...Object.keys(ratings)].map(Number));
@@ -661,9 +674,9 @@ export default function App() {
     <main id="main-content">
       {tab === "pick" && <PickView
         prompt={promptDraft} hasSubmittedPrompt={prompt.trim().length >= 3} promptExplanation={promptExplanation} setPrompt={setPromptDraft} onSubmitPrompt={() => setPrompt(promptDraft.trim())} filters={filters} setFilters={setFilters} providers={providers} providerOpen={providerOpen} setProviderOpen={setProviderOpen} streamingConfigured={hasTmdbKey()}
-        results={prompt.trim().length >= 3 ? visibleResults : []} loading={prompt.trim().length >= 3 && (pickLoading || streamingChecksPending)} error={pickError}
+        results={prompt.trim().length >= 3 ? visibleResults : []} totalResults={eligibleRanked.length} resultMode={promptResultMode} expandedResults={expandedResults} loading={prompt.trim().length >= 3 && (pickLoading || streamingChecksPending)} error={pickError}
         availability={availability} expandedReason={expandedReason} setExpandedReason={setExpandedReason} watched={watched} watchlist={watchlist}
-        onWatched={markWatched} onSave={saveMovie} onPick={chooseMovie} onReject={rejectMovie} onShowMore={showMore} onClearStreaming={() => setFilters((current) => ({ ...current, providerIds: [], includeTheaters: false }))} developerMode={developerMode}
+        onWatched={markWatched} onSave={saveMovie} onPick={chooseMovie} onReject={rejectMovie} onOpen={openMovie} onShowMore={showMore} onClearStreaming={() => setFilters((current) => ({ ...current, providerIds: [], includeTheaters: false }))} developerMode={developerMode}
       />}
       {tab === "taste" && <TasteView movie={sprintMovie} loading={sprintLoading} error={sprintError} decisions={tasteDecisions} watchlist={watchlist} signals={tasteSignals} events={learningEvents}
         preferences={preferences} similarityPoints={similarityPoints} onAnswer={answerSprint} onWatched={(movie) => markWatched(movie, true)} onSave={(movie) => saveMovie(movie, false)} onRetry={refillSprint} onUndo={undoLearning} onPreference={applyPreference} onFavorite={applyFavorite} />}
@@ -686,9 +699,9 @@ export default function App() {
 
 function PickView(props: {
   prompt: string; hasSubmittedPrompt: boolean; promptExplanation: string; setPrompt: (value: string) => void; onSubmitPrompt: () => void; filters: PickFilters; setFilters: (updater: (current: PickFilters) => PickFilters) => void;
-  providers: StreamingProvider[]; providerOpen: boolean; setProviderOpen: (value: boolean) => void; results: RecommendationResult[]; loading: boolean; error: string;
+  providers: StreamingProvider[]; providerOpen: boolean; setProviderOpen: (value: boolean) => void; results: RecommendationResult[]; totalResults: number; resultMode: "curated" | "collection"; expandedResults: boolean; loading: boolean; error: string;
   availability: Record<number, StreamingAvailability>; expandedReason: number | null; setExpandedReason: (id: number | null) => void; watched: WatchedMap; watchlist: WatchlistMap;
-  onWatched: (movie: Movie) => void; onSave: (movie: Movie) => void; onPick: (result: RecommendationResult) => void; onReject: (movie: Movie) => void; onShowMore: () => void; onClearStreaming: () => void; developerMode: boolean; streamingConfigured: boolean;
+  onWatched: (movie: Movie) => void; onSave: (movie: Movie) => void; onPick: (result: RecommendationResult) => void; onReject: (movie: Movie) => void; onOpen: (movie: Movie) => void; onShowMore: () => void; onClearStreaming: () => void; developerMode: boolean; streamingConfigured: boolean;
 }) {
   const filterRowRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -716,11 +729,13 @@ function PickView(props: {
       {props.hasSubmittedPrompt && props.promptExplanation && !props.loading && <p className="prompt-explanation">{props.promptExplanation}</p>}
     </div>
     {props.error && <p className="quiet-notice">{props.error}</p>}
-    <div className="pick-stage" aria-live="polite">
-      {props.loading ? <>{[1, 2, 3].map((rank) => <div className={`pick-card skeleton-card rank-${rank}`} key={rank}><div className="poster-skeleton"/><div className="line-skeleton"/><div className="button-skeleton"/></div>)}</> : props.results.map((result, index) => <RecommendationCard key={result.movie.id} result={result} rank={index + 1} availability={props.availability[result.movie.id]} expanded={props.expandedReason === result.movie.id} onExpand={() => props.setExpandedReason(props.expandedReason === result.movie.id ? null : result.movie.id)} onWatched={() => props.onWatched(result.movie)} onSave={() => props.onSave(result.movie)} onPick={() => props.onPick(result)} onReject={() => props.onReject(result.movie)} saved={Boolean(props.watchlist[result.movie.id])} developerMode={props.developerMode} />)}
+    <div className={props.expandedResults ? "pick-stage is-expanded" : "pick-stage"} aria-live="polite">
+      {props.loading ? <>{[1, 2, 3].map((rank) => <div className={`pick-card skeleton-card rank-${rank}`} key={rank}><div className="poster-skeleton"/><div className="line-skeleton"/><div className="button-skeleton"/></div>)}</> : props.expandedResults
+        ? props.results.map((result, index) => <ExpandedResultCard key={result.movie.id} result={result} rank={index + 1} saved={Boolean(props.watchlist[result.movie.id])} onOpen={() => props.onOpen(result.movie)} onWatched={() => props.onWatched(result.movie)} onSave={() => props.onSave(result.movie)} />)
+        : props.results.map((result, index) => <RecommendationCard key={result.movie.id} result={result} rank={index + 1} availability={props.availability[result.movie.id]} expanded={props.expandedReason === result.movie.id} onExpand={() => props.setExpandedReason(props.expandedReason === result.movie.id ? null : result.movie.id)} onWatched={() => props.onWatched(result.movie)} onSave={() => props.onSave(result.movie)} onPick={() => props.onPick(result)} onReject={() => props.onReject(result.movie)} saved={Boolean(props.watchlist[result.movie.id])} developerMode={props.developerMode} />)}
     </div>
     {props.hasSubmittedPrompt && !props.loading && props.results.length === 0 && <div className="empty-state"><h2>{props.filters.providerIds.length || props.filters.includeTheaters ? "No verified matches" : "No matches found"}</h2><p>Try a broader request or clear a filter.</p>{(props.filters.providerIds.length > 0 || props.filters.includeTheaters) && <button className="secondary-button" onClick={props.onClearStreaming}>Clear where-to-watch filter</button>}</div>}
-    {props.results.length > 0 && <button className="show-more" onClick={props.onShowMore}>Show 3 more</button>}
+    {props.totalResults > 3 && <button className="show-more" onClick={props.onShowMore}>{props.expandedResults ? "Back to top 3" : props.resultMode === "collection" ? `See all ${Math.min(20, props.totalResults)} matches` : "See more results"}</button>}
   </section>;
 }
 
@@ -745,6 +760,14 @@ function RecommendationCard({ result, rank, availability, expanded, saved, onExp
       {expanded && <div className="signal-panel">{result.signals.map((signal) => <div className="signal-row" key={signal.label}><div><strong>{signal.label}</strong><span>{signal.detail}</span></div><div className="signal-track"><i style={{ width: `${Math.max(8, signal.value * 100)}%` }} /></div></div>)}<small className="signal-note">Relative contributors, not probabilities.</small>{developerMode && <code>score {result.score.toFixed(3)}</code>}</div>}
     </div>
     <div className="pick-actions"><button className="secondary-button" onClick={onWatched}><Icon name="eye"/>Watched</button><button className="secondary-button" onClick={onSave} disabled={saved}><Icon name="bookmark"/>{saved ? "Saved" : "Save"}</button><button className="primary-button pick-this" onClick={onPick}>Pick this</button><button className="text-action" onClick={onReject}>Not for me</button></div>
+  </article>;
+}
+
+function ExpandedResultCard({ result, rank, saved, onOpen, onWatched, onSave }: { result: RecommendationResult; rank: number; saved: boolean; onOpen: () => void; onWatched: () => void; onSave: () => void }) {
+  return <article className="expanded-result-card">
+    <button className="expanded-poster-button" onClick={onOpen} aria-label={`Open ${result.movie.title}`}><span>{rank}</span><img src={posterUrl(result.movie.posterPath, "w342")} alt={`Poster for ${result.movie.title}`} /></button>
+    <button className="expanded-title" onClick={onOpen}><strong>{result.movie.title}</strong><small>{result.movie.year} · {shortRuntime(result.movie)}</small></button>
+    <div><button className="text-action" onClick={onWatched}>Watched</button><button className="text-action" onClick={onSave} disabled={saved}>{saved ? "Saved" : "Save"}</button></div>
   </article>;
 }
 
