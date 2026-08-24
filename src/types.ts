@@ -20,6 +20,7 @@ export type Movie = {
   keywords?: string[];
   originalLanguage?: string;
   productionCountries?: string[];
+  trailerKey?: string;
   similarMovieIds?: number[];
   recommendedMovieIds?: number[];
 };

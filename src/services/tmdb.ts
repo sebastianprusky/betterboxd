@@ -54,6 +54,9 @@ type TmdbMovieDetail = TmdbMovie & {
   keywords?: { keywords?: Array<{ id?: number; name: string }> };
   recommendations?: { results?: TmdbMovie[] };
   similar?: { results?: TmdbMovie[] };
+  videos?: {
+    results?: Array<{ key?: string; site?: string; type?: string; official?: boolean }>;
+  };
 };
 
 type SearchCandidate = {
@@ -90,28 +93,35 @@ const mapMovie = (movie: TmdbMovie): Movie => ({
 });
 
 const genreNameToId = Object.fromEntries(Object.entries(genreIds).map(([id, name]) => [name.toLowerCase(), id]));
-const mapMovieDetail = (movie: TmdbMovieDetail): Movie => ({
-  id: movie.id,
-  title: movie.title || movie.name || "Untitled",
-  year: (movie.release_date || movie.first_air_date || "").slice(0, 4) || "Unknown",
-  posterPath: movie.poster_path,
-  backdropPath: movie.backdrop_path,
-  overview: movie.overview || "No overview available yet.",
-  genres: movie.genres?.map((genre) => genre.name) || (movie.genre_ids || []).map((id) => genreIds[id]).filter(Boolean),
-  voteAverage: movie.vote_average,
-  runtime: movie.runtime,
-  director: movie.credits?.crew?.find((person) => person.job === "Director")?.name,
-  cast: movie.credits?.cast
-    ?.sort((a, b) => a.order - b.order)
-    .slice(0, 5)
-    .map((person) => person.name),
-  popularity: movie.popularity,
-  keywords: movie.keywords?.keywords?.slice(0, 12).map((keyword) => keyword.name),
-  originalLanguage: movie.original_language,
-  productionCountries: movie.production_countries?.slice(0, 3).map((country) => country.name),
-  recommendedMovieIds: movie.recommendations?.results?.slice(0, 12).map((recommendation) => recommendation.id),
-  similarMovieIds: movie.similar?.results?.slice(0, 12).map((similar) => similar.id),
-});
+const mapMovieDetail = (movie: TmdbMovieDetail): Movie => {
+  const youtubeVideos = movie.videos?.results?.filter((video) => video.site === "YouTube" && video.key) || [];
+  const trailer = youtubeVideos.find((video) => video.type === "Trailer" && video.official)
+    || youtubeVideos.find((video) => video.type === "Trailer")
+    || youtubeVideos.find((video) => video.type === "Teaser");
+  return {
+    id: movie.id,
+    title: movie.title || movie.name || "Untitled",
+    year: (movie.release_date || movie.first_air_date || "").slice(0, 4) || "Unknown",
+    posterPath: movie.poster_path,
+    backdropPath: movie.backdrop_path,
+    overview: movie.overview || "No overview available yet.",
+    genres: movie.genres?.map((genre) => genre.name) || (movie.genre_ids || []).map((id) => genreIds[id]).filter(Boolean),
+    voteAverage: movie.vote_average,
+    runtime: movie.runtime,
+    director: movie.credits?.crew?.find((person) => person.job === "Director")?.name,
+    cast: movie.credits?.cast
+      ?.sort((a, b) => a.order - b.order)
+      .slice(0, 5)
+      .map((person) => person.name),
+    popularity: movie.popularity,
+    keywords: movie.keywords?.keywords?.slice(0, 12).map((keyword) => keyword.name),
+    originalLanguage: movie.original_language,
+    productionCountries: movie.production_countries?.slice(0, 3).map((country) => country.name),
+    trailerKey: trailer?.key,
+    recommendedMovieIds: movie.recommendations?.results?.slice(0, 12).map((recommendation) => recommendation.id),
+    similarMovieIds: movie.similar?.results?.slice(0, 12).map((similar) => similar.id),
+  };
+};
 
 async function tmdbFetch(path: string) {
   if (!apiKey) return null;
@@ -812,7 +822,7 @@ export async function askPickAMovie(query: string): Promise<AskPickAMovieResult>
 export async function getMovieDetails(movie: Movie): Promise<Movie> {
   const cached = movieDetailCache.get(movie.id);
   if (cached) return cached;
-  const request = tmdbFetch(`/movie/${movie.id}?append_to_response=credits,keywords,recommendations,similar`)
+  const request = tmdbFetch(`/movie/${movie.id}?append_to_response=credits,keywords,recommendations,similar,videos`)
     .then((data) => data ? mapMovieDetail(data) : fallbackMovies.find((fallback) => fallback.id === movie.id) || movie)
     .catch((error) => {
       movieDetailCache.delete(movie.id);
