@@ -18,6 +18,7 @@ export type RecommendationSignal = { label: string; value: number; detail: strin
 export type RecommendationResult = { movie: Movie; score: number; reason: string; signals: RecommendationSignal[] };
 
 const interestWeights = { interested: 0.32, maybe: 0.1, notInterested: -0.8 } as const;
+const movieVectorCache = new Map<number, { profile: string; vector: number[] }>();
 
 export { decayingPickWeight, getRatingSignal } from "./recommendationPolicy";
 
@@ -56,6 +57,7 @@ export function recommendMovies({
   const preferredGenres = new Set(preferences.genres.map(normalize));
   const preferredDirectors = new Set(preferences.directors.map(normalize));
   const preferredActors = new Set((preferences.actors || []).map(normalize));
+  const likedMovies = movies.filter((movie) => (ratings[movie.id] || 0) >= 4);
   const seenMovieIds = new Set<number>();
   const uniqueMovies = movies.filter((movie) => {
     if (seenMovieIds.has(movie.id)) return false;
@@ -73,7 +75,7 @@ export function recommendMovies({
       const saved = Boolean(watchlist[movie.id]);
       const modelScore = collaborativeScores?.get(movie.id);
       const hasCollaborativeData = modelScore !== undefined;
-      const collaborative = hasCollaborativeData ? clamp01((modelScore + 1) / 2) : relationshipSignal(movie, movies, ratings);
+      const collaborative = hasCollaborativeData ? clamp01((modelScore + 1) / 2) : relationshipSignal(movie, likedMovies);
       const promptRelevance = promptScores[movie.id];
       const weights = mode === "focused"
         ? { taste: 0.58, quality: 0.12, popularity: 0.05, novelty: 0.05, collaborative: 0.2 }
@@ -87,7 +89,7 @@ export function recommendMovies({
       const signals = normalizeSignals([
         ...(promptRelevance === undefined ? [] : [{ label: "Your request", value: clamp01(promptRelevance), detail: "Directly matches the request you entered" }]),
         { label: "Your taste", value: taste, detail: tasteDetail(movie, preferences) },
-        { label: hasCollaborativeData ? "Audience patterns" : "Movie fit", value: collaborative, detail: hasCollaborativeData ? collaborativeEvidence?.get(movie.id) || "MovieLens item factors compared with your ratings" : collaborativeDetail(movie, movies, ratings) },
+        { label: hasCollaborativeData ? "Audience patterns" : "Movie fit", value: collaborative, detail: hasCollaborativeData ? collaborativeEvidence?.get(movie.id) || "MovieLens item factors compared with your ratings" : collaborativeDetail(movie, likedMovies) },
         { label: "Quality", value: quality, detail: "TMDB audience rating" },
         { label: "Something new", value: novelty, detail: "Balances familiarity with discovery" },
       ]);
@@ -132,16 +134,14 @@ function explicitBoost(movie: Movie, genres: Set<string>, directors: Set<string>
   return Math.min(genre + director + cast, 0.14);
 }
 
-function relationshipSignal(movie: Movie, movies: Movie[], ratings: RatingMap) {
-  const liked = movies.filter((candidate) => (ratings[candidate.id] || 0) >= 4);
-  if (!liked.length) return 0.45;
-  const best = liked.reduce((max, candidate) => Math.max(max, affinityOverlap(movie, candidate)), 0);
+function relationshipSignal(movie: Movie, likedMovies: Movie[]) {
+  if (!likedMovies.length) return 0.45;
+  const best = likedMovies.reduce((max, candidate) => Math.max(max, affinityOverlap(movie, candidate)), 0);
   return clamp01(best / 8);
 }
 
-function collaborativeDetail(movie: Movie, movies: Movie[], ratings: RatingMap) {
-  const match = movies
-    .filter((candidate) => (ratings[candidate.id] || 0) >= 4)
+function collaborativeDetail(movie: Movie, likedMovies: Movie[]) {
+  const match = likedMovies
     .map((candidate) => ({ candidate, overlap: affinityOverlap(movie, candidate) }))
     .sort((a, b) => b.overlap - a.overlap)[0];
   return match?.overlap > 0 ? `Shares movie traits with ${match.candidate.title}` : "Shared genres, people, keywords, and TMDB relationships";
@@ -173,7 +173,14 @@ function noveltyScore(movie: Movie, preferredGenres: Set<string>) {
   return overlap ? 0.42 : 0.72;
 }
 
-function movieVector(movie: Movie) { return embedText(buildMovieProfile(movie)); }
+function movieVector(movie: Movie) {
+  const profile = buildMovieProfile(movie);
+  const cached = movieVectorCache.get(movie.id);
+  if (cached?.profile === profile) return cached.vector;
+  const vector = embedText(profile);
+  movieVectorCache.set(movie.id, { profile, vector });
+  return vector;
+}
 
 function diversityRerank(results: RecommendationResult[], mode: RecommendationMode, limit: number, promptActive = false) {
   const selected: RecommendationResult[] = [];

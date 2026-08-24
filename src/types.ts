@@ -35,12 +35,13 @@ export type StreamingAvailability = {
 };
 
 export type PickFilters = {
-  mood: string;
-  runtime: string;
-  genre: string;
-  era: string;
+  runtimeMin: number;
+  runtimeMax: number;
+  genres: string[];
+  eras: string[];
   region: string;
   providerIds: number[];
+  includeTheaters: boolean;
 };
 
 export type MovieDebugInfo = {

@@ -278,6 +278,19 @@ export async function getStreamingProviders(region: string): Promise<StreamingPr
     .map(({ id, name, logoPath }: StreamingProvider & { priority: number }) => ({ id, name, logoPath }));
 }
 
+async function getNowPlayingMovies(region: string): Promise<Movie[]> {
+  if (!apiKey) return [];
+  const pages = await Promise.all([1, 2, 3].map((page) =>
+    tmdbFetch(`/movie/now_playing?region=${encodeURIComponent(region.toUpperCase())}&page=${page}`)
+  ));
+  return dedupeMovies(pages.flatMap((page) => page?.results || []).map(mapMovie))
+    .filter((movie) => movie.posterPath);
+}
+
+export async function getNowPlayingMovieIds(region: string): Promise<Set<number>> {
+  return new Set((await getNowPlayingMovies(region)).map((movie) => movie.id));
+}
+
 export async function discoverPickMovies(filters: PickFilters): Promise<Movie[]> {
   if (!apiKey) {
     return fallbackMovies.filter((movie) => matchesPickFilters(movie, filters));
@@ -289,65 +302,63 @@ export async function discoverPickMovies(filters: PickFilters): Promise<Movie[]>
     "vote_count.gte": "40",
     page: "1",
   });
-  if (filters.genre) {
-    const genreId = genreNameToId[filters.genre.toLowerCase()];
-    if (genreId) params.set("with_genres", genreId);
+  if (filters.genres.length) {
+    const genreValues = filters.genres.map((genre) => genreNameToId[genre.toLowerCase()]).filter(Boolean);
+    if (genreValues.length) params.set("with_genres", genreValues.join("|"));
   }
-  const runtimeMap: Record<string, [string, string]> = {
-    short: ["0", "100"], standard: ["80", "130"], long: ["120", "400"],
-  };
-  if (runtimeMap[filters.runtime]) {
-    params.set("with_runtime.gte", runtimeMap[filters.runtime][0]);
-    params.set("with_runtime.lte", runtimeMap[filters.runtime][1]);
-  }
+  if (filters.runtimeMin > 30) params.set("with_runtime.gte", String(filters.runtimeMin));
+  if (filters.runtimeMax < 300) params.set("with_runtime.lte", String(filters.runtimeMax));
   const eraMap: Record<string, [string, string]> = {
     recent: ["2020-01-01", "2099-12-31"], "2010s": ["2010-01-01", "2019-12-31"],
-    "2000s": ["2000-01-01", "2009-12-31"], classic: ["1900-01-01", "1999-12-31"],
+    "2000s": ["2000-01-01", "2009-12-31"], "1990s": ["1990-01-01", "1999-12-31"],
+    "1980s": ["1980-01-01", "1989-12-31"], "1970s": ["1970-01-01", "1979-12-31"],
+    "1960s": ["1960-01-01", "1969-12-31"], pre1960: ["1900-01-01", "1959-12-31"],
   };
-  if (eraMap[filters.era]) {
-    params.set("primary_release_date.gte", eraMap[filters.era][0]);
-    params.set("primary_release_date.lte", eraMap[filters.era][1]);
+  if (filters.eras.length === 1 && eraMap[filters.eras[0]]) {
+    params.set("primary_release_date.gte", eraMap[filters.eras[0]][0]);
+    params.set("primary_release_date.lte", eraMap[filters.eras[0]][1]);
   }
   if (filters.providerIds.length) {
     params.set("watch_region", filters.region);
     params.set("with_watch_monetization_types", "flatrate");
     params.set("with_watch_providers", filters.providerIds.join("|"));
   }
-  const pages = await Promise.all([1, 2, 3].map((page) => {
-    const pageParams = new URLSearchParams(params);
-    pageParams.set("page", String(page));
-    return tmdbFetch(`/discover/movie?${pageParams.toString()}`);
-  }));
-  const movies = dedupeMovies(pages.flatMap((page) => page?.results || []).map(mapMovie))
-    .filter((movie) => movie.posterPath)
-    .filter((movie) => matchesMood(movie, filters.mood));
-  return enrichMovies(movies.slice(0, 48), 16);
+  const shouldDiscover = !filters.includeTheaters || filters.providerIds.length > 0;
+  const [pages, theaterMovies] = await Promise.all([
+    shouldDiscover ? Promise.all([1, 2, 3].map((page) => {
+      const pageParams = new URLSearchParams(params);
+      pageParams.set("page", String(page));
+      return tmdbFetch(`/discover/movie?${pageParams.toString()}`);
+    })) : Promise.resolve([]),
+    filters.includeTheaters ? getNowPlayingMovies(filters.region) : Promise.resolve([]),
+  ]);
+  const movies = dedupeMovies([
+    ...theaterMovies,
+    ...pages.flatMap((page) => page?.results || []).map(mapMovie),
+  ]).filter((movie) => movie.posterPath);
+  const enriched = await enrichMovies(movies.slice(0, 60), 24);
+  return enriched.filter((movie) => matchesPickFilters(movie, filters));
 }
 
 export function matchesPickFilters(movie: Movie, filters: PickFilters) {
-  if (filters.genre && !movie.genres.some((genre) => genre.toLowerCase() === filters.genre.toLowerCase())) return false;
-  if (filters.runtime === "short" && (movie.runtime || 100) > 100) return false;
-  if (filters.runtime === "standard" && ((movie.runtime || 105) < 80 || (movie.runtime || 105) > 130)) return false;
-  if (filters.runtime === "long" && (movie.runtime || 100) < 120) return false;
+  if (filters.genres.length && !movie.genres.some((genre) => filters.genres.some((selected) => selected.toLowerCase() === genre.toLowerCase()))) return false;
+  const runtimeConstrained = filters.runtimeMin > 30 || filters.runtimeMax < 300;
+  if (runtimeConstrained && (!movie.runtime || movie.runtime < filters.runtimeMin || movie.runtime > filters.runtimeMax)) return false;
   const year = Number(movie.year);
-  if (filters.era === "recent" && year < 2020) return false;
-  if (filters.era === "2010s" && (year < 2010 || year > 2019)) return false;
-  if (filters.era === "2000s" && (year < 2000 || year > 2009)) return false;
-  if (filters.era === "classic" && year >= 2000) return false;
-  return matchesMood(movie, filters.mood);
-}
-
-function matchesMood(movie: Movie, mood: string) {
-  if (!mood) return true;
-  const text = `${movie.overview} ${(movie.keywords || []).join(" ")} ${movie.genres.join(" ")}`.toLowerCase();
-  const terms: Record<string, string[]> = {
-    cozy: ["cozy", "family", "romance", "comedy", "friendship"],
-    tense: ["tense", "thriller", "crime", "mystery", "survival"],
-    thoughtful: ["thoughtful", "drama", "identity", "history", "moral"],
-    funny: ["comedy", "funny", "satire"],
-    strange: ["surreal", "weird", "fantasy", "science fiction", "sci-fi"],
-  };
-  return (terms[mood] || []).some((term) => text.includes(term));
+  if (filters.eras.length) {
+    const inSelectedEra = filters.eras.some((era) =>
+      (era === "recent" && year >= 2020) ||
+      (era === "2010s" && year >= 2010 && year <= 2019) ||
+      (era === "2000s" && year >= 2000 && year <= 2009) ||
+      (era === "1990s" && year >= 1990 && year <= 1999) ||
+      (era === "1980s" && year >= 1980 && year <= 1989) ||
+      (era === "1970s" && year >= 1970 && year <= 1979) ||
+      (era === "1960s" && year >= 1960 && year <= 1969) ||
+      (era === "pre1960" && year < 1960)
+    );
+    if (!inSelectedEra) return false;
+  }
+  return true;
 }
 
 export async function getTasteSprintMovies(page: number): Promise<{ movies: Movie[]; hasMore: boolean }> {

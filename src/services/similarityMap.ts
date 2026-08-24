@@ -1,56 +1,37 @@
 import type { Movie } from "../types";
-import { cosineSimilarity, embedText } from "./localEmbeddings";
-import { buildMovieProfile } from "./movieProfiles";
 
-export type SimilarityMapPoint = {
+export type RecommendationMapPoint = {
   movie: Movie;
   x: number;
   y: number;
+  fitPercent: number;
 };
 
-export function buildSimilarityMap(movies: Movie[], limit = 24): SimilarityMapPoint[] {
-  const sample = movies.slice(0, limit);
-  if (!sample.length) return [];
-  const vectors = sample.map((movie) => embedText(buildMovieProfile(movie)));
-  const firstAnchor = 0;
-  const secondAnchor = farthestFrom(vectors, firstAnchor);
-  const thirdAnchor = farthestFromPair(vectors, firstAnchor, secondAnchor);
-  const raw = sample.map((movie, index) => ({
-    movie,
-    x: 1 - cosineSimilarity(vectors[index], vectors[secondAnchor]),
-    y: 1 - cosineSimilarity(vectors[index], vectors[thirdAnchor]),
-  }));
-  const xValues = raw.map((point) => point.x);
-  const yValues = raw.map((point) => point.y);
-  const minX = Math.min(...xValues);
-  const maxX = Math.max(...xValues);
-  const minY = Math.min(...yValues);
-  const maxY = Math.max(...yValues);
-  return raw.map((point) => ({
-    ...point,
-    x: 7 + normalize(point.x, minX, maxX) * 86,
-    y: 8 + normalize(point.y, minY, maxY) * 84,
-  }));
-}
+export type RecommendationMap = {
+  points: RecommendationMapPoint[];
+  oldestYear: number;
+  newestYear: number;
+};
 
-function farthestFrom(vectors: number[][], anchor: number) {
-  let selected = anchor;
-  let distance = Number.NEGATIVE_INFINITY;
-  vectors.forEach((vector, index) => {
-    const next = 1 - cosineSimilarity(vector, vectors[anchor]);
-    if (next > distance) { selected = index; distance = next; }
-  });
-  return selected;
-}
-
-function farthestFromPair(vectors: number[][], first: number, second: number) {
-  let selected = first;
-  let distance = Number.NEGATIVE_INFINITY;
-  vectors.forEach((vector, index) => {
-    const next = (1 - cosineSimilarity(vector, vectors[first])) + (1 - cosineSimilarity(vector, vectors[second]));
-    if (next > distance) { selected = index; distance = next; }
-  });
-  return selected;
+export function buildSimilarityMap(results: Array<{ movie: Movie; score: number }>, limit = 24): RecommendationMap {
+  const sample = results.filter((result) => Number.isFinite(Number(result.movie.year))).slice(0, limit);
+  if (!sample.length) return { points: [], oldestYear: 0, newestYear: 0 };
+  const years = sample.map((result) => Number(result.movie.year));
+  const oldestYear = Math.min(...years);
+  const newestYear = Math.max(...years);
+  const scores = sample.map((result) => result.score);
+  const minimumScore = Math.min(...scores);
+  const maximumScore = Math.max(...scores);
+  return {
+    oldestYear,
+    newestYear,
+    points: sample.map((result) => ({
+      movie: result.movie,
+      x: 7 + normalize(Number(result.movie.year), oldestYear, newestYear) * 86,
+      y: 92 - normalize(result.score, minimumScore, maximumScore) * 84,
+      fitPercent: Math.round(Math.max(0, Math.min(1, result.score)) * 100),
+    })),
+  };
 }
 
 function normalize(value: number, minimum: number, maximum: number) {

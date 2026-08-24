@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties } from "react";
 import { AccountHub } from "./components/AccountHub";
 import { fallbackMovies } from "./data/fallbackMovies";
 import { emptyCloudState, createMergeKey, mergeGuestAndAccountState } from "./services/accountState";
@@ -8,9 +8,9 @@ import { analyzeReview } from "./services/reviewInsights";
 import { recommendMovies, type RecommendationResult } from "./services/recommendations";
 import { buildSimilarityMap } from "./services/similarityMap";
 import {
-  discoverPickMovies,
   getMovieDetails,
   getMovieWatchProviders,
+  getNowPlayingMovieIds,
   getRecommendationCatalog,
   getStreamingProviders,
   getTasteSprintMovies,
@@ -68,7 +68,7 @@ const storage = {
   learningEvents: "pickamovie-learning-events",
   tasteDecisions: "pickamovie-taste-decisions",
   theme: "pickamovie-theme",
-  tour: "pickamovie-tour-v1",
+  tour: "pickamovie-tour-v2",
   stateMeta: "pickamovie-state-metadata",
   mergeKey: "pickamovie-guest-merge-key",
   cache: "pickamovie-movie-cache",
@@ -91,15 +91,11 @@ const legacy: Partial<Record<keyof typeof storage, string[]>> = {
 
 const defaultPreferences: OnboardingPreferences = { genres: [], directors: [], actors: [], favoriteMovies: {} };
 const defaultFilters = (): PickFilters => ({
-  mood: "", runtime: "", genre: "", era: "", providerIds: [],
-  region: (navigator.language.split("-")[1] || "US").toUpperCase(),
+  runtimeMin: 30, runtimeMax: 300, genres: [], eras: [], providerIds: [], includeTheaters: false,
+  region: "US",
 });
-const filterOptions = {
-  mood: [["", "Any mood"], ["cozy", "Cozy"], ["tense", "Tense"], ["thoughtful", "Thoughtful"], ["funny", "Funny"], ["strange", "Strange"]],
-  runtime: [["", "Any runtime"], ["short", "Under 100 min"], ["standard", "80–130 min"], ["long", "Over 2 hours"]],
-  genre: [["", "Any genre"], ["Comedy", "Comedy"], ["Drama", "Drama"], ["Thriller", "Thriller"], ["Horror", "Horror"], ["Romance", "Romance"], ["Sci-Fi", "Sci-Fi"], ["Animation", "Animation"]],
-  era: [["", "Any era"], ["recent", "2020s"], ["2010s", "2010s"], ["2000s", "2000s"], ["classic", "Before 2000"]],
-} as const;
+const genreOptions = [["Comedy", "Comedy"], ["Drama", "Drama"], ["Thriller", "Thriller"], ["Horror", "Horror"], ["Romance", "Romance"], ["Science Fiction", "Sci-Fi"], ["Animation", "Animation"]] as const;
+const eraOptions = [["recent", "2020s"], ["2010s", "2010s"], ["2000s", "2000s"], ["1990s", "1990s"], ["1980s", "1980s"], ["1970s", "1970s"], ["1960s", "1960s"], ["pre1960", "Before 1960"]] as const;
 const ratingChoices = Array.from({ length: 10 }, (_, index) => (index + 1) / 2);
 
 function readJson<T>(key: string, fallback: T, oldKeys: string[] = []): T {
@@ -152,9 +148,10 @@ export default function App() {
   const [learningEvents, setLearningEvents] = useState<LearningEvent[]>(() => readJson(storage.learningEvents, []));
   const [tasteDecisions, setTasteDecisions] = useState(() => readJson(storage.tasteDecisions, 0));
   const [catalog, setCatalog] = useState<Movie[]>(() => readJson(storage.cache, fallbackMovies, legacy.cache));
-  const [candidateMovies, setCandidateMovies] = useState<Movie[]>(fallbackMovies);
+  const [candidateMovies, setCandidateMovies] = useState<Movie[]>([]);
   const [collaborativeModel, setCollaborativeModel] = useState<CollaborativeModel | null>(null);
   const [filters, setFilters] = useState<PickFilters>(defaultFilters);
+  const [promptDraft, setPromptDraft] = useState("");
   const [prompt, setPrompt] = useState("");
   const [promptExplanation, setPromptExplanation] = useState("");
   const [promptScores, setPromptScores] = useState<Record<number, number>>({});
@@ -166,6 +163,7 @@ export default function App() {
   const [providers, setProviders] = useState<StreamingProvider[]>([]);
   const [providerOpen, setProviderOpen] = useState(false);
   const [availability, setAvailability] = useState<Record<number, StreamingAvailability>>({});
+  const [theaterMovieIds, setTheaterMovieIds] = useState<Set<number> | null>(null);
   const [ratingPromptMovie, setRatingPromptMovie] = useState<Movie | null>(null);
   const [sprintQueue, setSprintQueue] = useState<Movie[]>([]);
   const [sprintLoading, setSprintLoading] = useState(false);
@@ -225,7 +223,7 @@ export default function App() {
   useEffect(() => {
     Promise.allSettled([getTrendingMovies(), getRecommendationCatalog()]).then((results) => {
       const movies = results.flatMap((result) => result.status === "fulfilled" ? result.value : []);
-      if (movies.length) { rememberMovies(movies); setCandidateMovies(movies); }
+      if (movies.length) rememberMovies(movies);
       setPickLoading(false);
     });
   }, [rememberMovies]);
@@ -241,6 +239,24 @@ export default function App() {
   }, [filters.region]);
 
   useEffect(() => {
+    if (!filters.includeTheaters) { setTheaterMovieIds(null); return; }
+    let cancelled = false;
+    setTheaterMovieIds(null);
+    getNowPlayingMovieIds(filters.region)
+      .then((ids) => { if (!cancelled) setTheaterMovieIds(ids); })
+      .catch(() => { if (!cancelled) setTheaterMovieIds(new Set()); });
+    return () => { cancelled = true; };
+  }, [filters.includeTheaters, filters.region]);
+
+  useEffect(() => {
+    if (prompt.trim().length < 3) {
+      setCandidateMovies([]);
+      setPromptScores({});
+      setPromptExplanation("");
+      setVisiblePickIds([]);
+      setPickLoading(false);
+      return;
+    }
     let cancelled = false;
     setPickLoading(true);
     setPickError("");
@@ -248,29 +264,20 @@ export default function App() {
     setVisiblePickIds([]);
     const timeout = window.setTimeout(async () => {
       try {
-        const hasPrompt = prompt.trim().length >= 3;
-        const discovered = hasPrompt ? [] : await discoverPickMovies(filters);
+        const askResult = await askPickAMovie(prompt.trim());
         if (cancelled) return;
-        let movies = discovered;
-        if (hasPrompt) {
-          const askResult = await askPickAMovie(prompt.trim());
-          if (cancelled) return;
-          const prompted = askResult.movies;
-          const constrained = prompted.filter((movie) => matchesPickFilters(movie, { ...filters, providerIds: [] }));
-          if (import.meta.env.DEV) {
-            console.debug("[pick-prompt] resolved", JSON.stringify({
-              serviceStatus: askResult.serviceStatus,
-              promptedCount: prompted.length,
-              constrainedCount: constrained.length,
-              topTitles: constrained.slice(0, 5).map((movie) => movie.title),
-            }));
-          }
-          movies = constrained;
-          setPromptScores(Object.fromEntries(constrained.map((movie) => [movie.id, askResult.promptScores[movie.id] || 0.35])));
-          setPromptExplanation(askResult.explanation);
-        } else {
-          setPromptScores({});
+        const prompted = askResult.movies;
+        const movies = prompted.filter((movie) => matchesPickFilters(movie, { ...filters, providerIds: [], includeTheaters: false }));
+        if (import.meta.env.DEV) {
+          console.debug("[pick-prompt] resolved", JSON.stringify({
+            serviceStatus: askResult.serviceStatus,
+            promptedCount: prompted.length,
+            constrainedCount: movies.length,
+            topTitles: movies.slice(0, 5).map((movie) => movie.title),
+          }));
         }
+        setPromptScores(Object.fromEntries(movies.map((movie) => [movie.id, askResult.promptScores[movie.id] || 0.35])));
+        setPromptExplanation(askResult.explanation);
         if (cancelled) return;
         setCandidateMovies(movies);
         rememberMovies(movies);
@@ -287,12 +294,20 @@ export default function App() {
     Object.values(interest).map((entry) => entry.movie), Object.values(preferences.favoriteMovies), detailMovie ? [detailMovie] : [],
   ), [catalog, candidateMovies, watchlist, watched, interest, preferences.favoriteMovies, detailMovie]);
 
-  const collaborativeScores = useMemo(() => scoreCollaborativeCandidates(collaborativeModel, ratings, candidateMovies), [collaborativeModel, ratings, candidateMovies]);
-  const collaborativeEvidence = useMemo(() => explainCollaborativeCandidates(collaborativeModel, ratings, allMovies), [collaborativeModel, ratings, allMovies]);
+  const deferredRatings = useDeferredValue(ratings);
+  const deferredWatchlist = useDeferredValue(watchlist);
+  const deferredWatched = useDeferredValue(watched);
+  const deferredInterest = useDeferredValue(interest);
+  const deferredPreferences = useDeferredValue(preferences);
+  const deferredPickIntents = useDeferredValue(pickIntents);
+  const deferredReviewInsights = useDeferredValue(reviewInsights);
+  const deferredAllMovies = useDeferredValue(allMovies);
+
+  const collaborativeScores = useMemo(() => scoreCollaborativeCandidates(collaborativeModel, deferredRatings, candidateMovies), [collaborativeModel, deferredRatings, candidateMovies]);
+  const collaborativeEvidence = useMemo(() => explainCollaborativeCandidates(collaborativeModel, deferredRatings, deferredAllMovies), [collaborativeModel, deferredRatings, deferredAllMovies]);
   const ranked = useMemo(() => recommendMovies({
-    movies: candidateMovies,
-    ratings, watchlist, watched, interest, preferences, pickIntents, reviewInsights, promptScores, collaborativeScores, collaborativeEvidence, mode: "balanced", limit: 30,
-  }), [candidateMovies, allMovies, ratings, watchlist, watched, interest, preferences, pickIntents, reviewInsights, promptScores, collaborativeScores, collaborativeEvidence]);
+    movies: candidateMovies, ratings: deferredRatings, watchlist: deferredWatchlist, watched: deferredWatched, interest: deferredInterest, preferences: deferredPreferences, pickIntents: deferredPickIntents, reviewInsights: deferredReviewInsights, promptScores, collaborativeScores, collaborativeEvidence, mode: "balanced", limit: 30,
+  }), [candidateMovies, deferredRatings, deferredWatchlist, deferredWatched, deferredInterest, deferredPreferences, deferredPickIntents, deferredReviewInsights, promptScores, collaborativeScores, collaborativeEvidence]);
 
   useEffect(() => {
     const targets = ranked.slice(0, filters.providerIds.length ? 15 : 6).map((result) => result.movie);
@@ -304,15 +319,18 @@ export default function App() {
   }, [ranked.map((result) => result.movie.id).join(","), filters.providerIds.join(","), filters.region]);
 
   const eligibleRanked = useMemo(() => {
-    const filtered = filters.providerIds.length
-      ? ranked.filter((result) => availability[result.movie.id]?.region === filters.region && availability[result.movie.id]?.status !== "unavailable" && availability[result.movie.id]?.providers.some((provider) => filters.providerIds.includes(provider.id)))
-      : ranked;
+    const hasWhereFilter = filters.providerIds.length > 0 || filters.includeTheaters;
+    const filtered = hasWhereFilter ? ranked.filter((result) => {
+      const streamsOnSelectedProvider = filters.providerIds.length > 0 && availability[result.movie.id]?.region === filters.region && availability[result.movie.id]?.status !== "unavailable" && availability[result.movie.id]?.providers.some((provider) => filters.providerIds.includes(provider.id));
+      const isInTheaters = filters.includeTheaters && theaterMovieIds?.has(result.movie.id);
+      return streamsOnSelectedProvider || isInTheaters;
+    }) : ranked;
     const saved = filtered.filter((result) => watchlist[result.movie.id]);
     const discovery = filtered.filter((result) => !watchlist[result.movie.id]);
     if (!saved.length) return discovery;
     const insertion = Math.min(2, discovery.length);
     return [...discovery.slice(0, insertion), saved[0], ...discovery.slice(insertion)];
-  }, [ranked, availability, filters.providerIds, watchlist]);
+  }, [ranked, availability, filters.providerIds, filters.includeTheaters, filters.region, theaterMovieIds, watchlist]);
 
   useEffect(() => {
     const eligible = new Set(eligibleRanked.map((result) => result.movie.id));
@@ -321,14 +339,14 @@ export default function App() {
       const next = eligibleRanked.map((result) => result.movie.id).filter((id) => !retained.includes(id)).slice(0, 3 - retained.length);
       return [...retained, ...next];
     });
-  }, [eligibleRanked.map((result) => result.movie.id).join(",")]);
+  }, [eligibleRanked.map((result) => result.movie.id).join(","), visiblePickIds.length]);
 
   const visibleResults = useMemo(() => visiblePickIds.map((id) => eligibleRanked.find((result) => result.movie.id === id)).filter(Boolean) as RecommendationResult[], [visiblePickIds, eligibleRanked]);
-  const streamingChecksPending = filters.providerIds.length > 0 && ranked.slice(0, 15).some((result) => availability[result.movie.id]?.region !== filters.region);
-  const tasteRanked = useMemo(() => recommendMovies({
-    movies: allMovies, ratings, watchlist, watched, interest, preferences, pickIntents, reviewInsights, collaborativeScores, collaborativeEvidence,
+  const streamingChecksPending = (filters.providerIds.length > 0 && ranked.slice(0, 15).some((result) => availability[result.movie.id]?.region !== filters.region)) || (filters.includeTheaters && theaterMovieIds === null);
+  const tasteRanked = useMemo(() => tab === "taste" ? recommendMovies({
+    movies: deferredAllMovies, ratings: deferredRatings, watchlist: deferredWatchlist, watched: deferredWatched, interest: deferredInterest, preferences: deferredPreferences, pickIntents: deferredPickIntents, reviewInsights: deferredReviewInsights, collaborativeScores, collaborativeEvidence,
     mode: "balanced", limit: 60,
-  }), [allMovies, ratings, watchlist, watched, interest, preferences, pickIntents, reviewInsights, collaborativeScores, collaborativeEvidence]);
+  }) : [], [tab, deferredAllMovies, deferredRatings, deferredWatchlist, deferredWatched, deferredInterest, deferredPreferences, deferredPickIntents, deferredReviewInsights, collaborativeScores, collaborativeEvidence]);
   const activeLearningSeeds = useMemo(() => rankForActiveLearning(tasteRanked, preferences), [tasteRanked, preferences]);
 
   const cloudState = useMemo<CloudUserState>(() => ({
@@ -629,7 +647,7 @@ export default function App() {
   }, [allMovies, watchlist, watched, ratings, interest, libraryFilter, libraryQuery]);
 
   const tasteSignals = useMemo(() => buildTasteSignals(allMovies, ratings, interest, preferences, reviewInsights), [allMovies, ratings, interest, preferences, reviewInsights]);
-  const similarityPoints = useMemo(() => buildSimilarityMap(tasteRanked.map((result) => result.movie), 24), [tasteRanked]);
+  const similarityPoints = useMemo(() => buildSimilarityMap(tasteRanked, 24), [tasteRanked]);
   const sprintMovie = sprintQueue[0];
 
   return <div className="app-shell">
@@ -642,10 +660,10 @@ export default function App() {
 
     <main id="main-content">
       {tab === "pick" && <PickView
-        prompt={prompt} promptExplanation={promptExplanation} setPrompt={setPrompt} filters={filters} setFilters={setFilters} providers={providers} providerOpen={providerOpen} setProviderOpen={setProviderOpen} streamingConfigured={hasTmdbKey()}
-        results={visibleResults} loading={pickLoading || streamingChecksPending} error={pickError}
+        prompt={promptDraft} hasSubmittedPrompt={prompt.trim().length >= 3} promptExplanation={promptExplanation} setPrompt={setPromptDraft} onSubmitPrompt={() => setPrompt(promptDraft.trim())} filters={filters} setFilters={setFilters} providers={providers} providerOpen={providerOpen} setProviderOpen={setProviderOpen} streamingConfigured={hasTmdbKey()}
+        results={prompt.trim().length >= 3 ? visibleResults : []} loading={prompt.trim().length >= 3 && (pickLoading || streamingChecksPending)} error={pickError}
         availability={availability} expandedReason={expandedReason} setExpandedReason={setExpandedReason} watched={watched} watchlist={watchlist}
-        onWatched={markWatched} onSave={saveMovie} onPick={chooseMovie} onReject={rejectMovie} onShowMore={showMore} onClearStreaming={() => setFilters((current) => ({ ...current, providerIds: [] }))} developerMode={developerMode}
+        onWatched={markWatched} onSave={saveMovie} onPick={chooseMovie} onReject={rejectMovie} onShowMore={showMore} onClearStreaming={() => setFilters((current) => ({ ...current, providerIds: [], includeTheaters: false }))} developerMode={developerMode}
       />}
       {tab === "taste" && <TasteView movie={sprintMovie} loading={sprintLoading} error={sprintError} decisions={tasteDecisions} watchlist={watchlist} signals={tasteSignals} events={learningEvents}
         preferences={preferences} similarityPoints={similarityPoints} onAnswer={answerSprint} onWatched={(movie) => markWatched(movie, true)} onSave={(movie) => saveMovie(movie, false)} onRetry={refillSprint} onUndo={undoLearning} onPreference={applyPreference} onFavorite={applyFavorite} />}
@@ -662,35 +680,60 @@ export default function App() {
     {addOpen && <AddMovieDialog query={addQuery} setQuery={setAddQuery} results={addResults} onClose={() => setAddOpen(false)} onWatched={(movie) => { markWatched(movie); setAddOpen(false); }} onSave={(movie) => { saveMovie(movie, false); setAddOpen(false); }} />}
     {importOpen && <ImportDialog rows={importRows} resolving={importResolving} onResolve={resolveImportRow} onClose={() => setImportOpen(false)} onConfirm={confirmImport} />}
     {reviewConsentPrompt && <ConsentDialog onDecline={() => { setReviewConsentAsked(true); setReviewAnalysisStatus((current) => ({ ...current, [reviewConsentPrompt.id]: "Review saved without analysis." })); setReviewConsentPrompt(null); }} onAccept={() => { setReviewConsent(true); setReviewConsentAsked(true); void runReviewAnalysis(reviewConsentPrompt); setReviewConsentPrompt(null); }} />}
-    {tourOpen && <OnboardingTour slide={tourSlide} setSlide={setTourSlide} onClose={closeTour} />}
+    {tourOpen && <OnboardingTour slide={tourSlide} setSlide={setTourSlide} onClose={closeTour} preferences={preferences} onPreference={applyPreference} sprintMovie={sprintMovie} sprintLoading={sprintLoading} sprintDecisions={tasteDecisions} onSprintAnswer={answerSprint} onRetrySprint={refillSprint} />}
   </div>;
 }
 
 function PickView(props: {
-  prompt: string; promptExplanation: string; setPrompt: (value: string) => void; filters: PickFilters; setFilters: (updater: (current: PickFilters) => PickFilters) => void;
+  prompt: string; hasSubmittedPrompt: boolean; promptExplanation: string; setPrompt: (value: string) => void; onSubmitPrompt: () => void; filters: PickFilters; setFilters: (updater: (current: PickFilters) => PickFilters) => void;
   providers: StreamingProvider[]; providerOpen: boolean; setProviderOpen: (value: boolean) => void; results: RecommendationResult[]; loading: boolean; error: string;
   availability: Record<number, StreamingAvailability>; expandedReason: number | null; setExpandedReason: (id: number | null) => void; watched: WatchedMap; watchlist: WatchlistMap;
   onWatched: (movie: Movie) => void; onSave: (movie: Movie) => void; onPick: (result: RecommendationResult) => void; onReject: (movie: Movie) => void; onShowMore: () => void; onClearStreaming: () => void; developerMode: boolean; streamingConfigured: boolean;
 }) {
-  const update = (key: keyof PickFilters, value: string) => props.setFilters((current) => ({ ...current, [key]: value }));
-  return <section className="pick-page page-enter">
+  const filterRowRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const closeOutside = (event: PointerEvent) => {
+      const target = event.target instanceof Element ? event.target : null;
+      if (!target?.closest(".filter-menu")) {
+        filterRowRef.current?.querySelectorAll<HTMLDetailsElement>("details[open]").forEach((details) => details.removeAttribute("open"));
+      }
+      if (!target?.closest(".provider-filter")) props.setProviderOpen(false);
+    };
+    document.addEventListener("pointerdown", closeOutside);
+    return () => document.removeEventListener("pointerdown", closeOutside);
+  }, [props.setProviderOpen]);
+  return <section className={props.hasSubmittedPrompt ? "pick-page page-enter" : "pick-page is-empty page-enter"}>
     <div className="pick-controls">
-      <label className="prompt-field"><Icon name="search" /><span className="sr-only">Describe what you want to watch</span><input value={props.prompt} onChange={(event) => props.setPrompt(event.target.value)} placeholder="What sounds good tonight?" /></label>
-      <div className="filter-row" aria-label="Recommendation filters">
-        {(["mood", "runtime", "genre", "era"] as const).map((key) => <label className="select-filter" key={key}><span>{key[0].toUpperCase() + key.slice(1)}</span><select value={props.filters[key]} onChange={(event) => update(key, event.target.value)}>{filterOptions[key].map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select><Icon name="chevron" /></label>)}
-        <div className="provider-filter"><button className={props.filters.providerIds.length ? "filter-button is-active" : "filter-button"} disabled={!props.streamingConfigured} title={props.streamingConfigured ? undefined : "Streaming availability is not configured"} aria-expanded={props.providerOpen} onClick={() => props.setProviderOpen(!props.providerOpen)}>Streaming{props.filters.providerIds.length ? ` · ${props.filters.providerIds.length}` : ""}<Icon name="chevron" /></button>
-          {props.providerOpen && <div className="provider-popover"><label>Country<select value={props.filters.region} onChange={(event) => props.setFilters((current) => ({ ...current, region: event.target.value, providerIds: [] }))}><option value="US">United States</option><option value="CA">Canada</option><option value="GB">United Kingdom</option><option value="AU">Australia</option></select></label>{props.providers.length ? <div className="provider-options">{props.providers.slice(0, 12).map((provider) => <label key={provider.id}><input type="checkbox" checked={props.filters.providerIds.includes(provider.id)} onChange={() => props.setFilters((current) => ({ ...current, providerIds: current.providerIds.includes(provider.id) ? current.providerIds.filter((id) => id !== provider.id) : [...current.providerIds, provider.id] }))} />{provider.name}</label>)}</div> : <p className="provider-empty">Providers are unavailable for this country right now.</p>}<small>Subscription catalogs · TMDB availability data powered by JustWatch</small></div>}
+      <form className="prompt-field" onSubmit={(event) => { event.preventDefault(); props.onSubmitPrompt(); }}><Icon name="search" /><label className="sr-only" htmlFor="pick-prompt">Describe what you want to watch</label><input id="pick-prompt" value={props.prompt} onChange={(event) => props.setPrompt(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); props.onSubmitPrompt(); } }} placeholder="What sounds good tonight?" /><button className="prompt-submit" type="submit" aria-label="Search movies">→</button></form>
+      <div className="filter-row" aria-label="Recommendation filters" ref={filterRowRef}>
+        <RuntimeFilter filters={props.filters} setFilters={props.setFilters} />
+        <MultiSelectFilter label="Genre" values={props.filters.genres} options={genreOptions} onToggle={(genre) => props.setFilters((current) => ({ ...current, genres: current.genres.includes(genre) ? current.genres.filter((item) => item !== genre) : [...current.genres, genre] }))} />
+        <MultiSelectFilter label="Era" values={props.filters.eras} options={eraOptions.map(([value, label]) => [value, label])} onToggle={(era) => props.setFilters((current) => ({ ...current, eras: current.eras.includes(era) ? current.eras.filter((item) => item !== era) : [...current.eras, era] }))} />
+        <div className="provider-filter"><button className={props.filters.providerIds.length || props.filters.includeTheaters ? "filter-button is-active" : "filter-button"} disabled={!props.streamingConfigured} title={props.streamingConfigured ? undefined : "Availability is not configured"} aria-expanded={props.providerOpen} onClick={() => props.setProviderOpen(!props.providerOpen)}>Where to watch{props.filters.providerIds.length + (props.filters.includeTheaters ? 1 : 0) ? ` · ${props.filters.providerIds.length + (props.filters.includeTheaters ? 1 : 0)}` : ""}<Icon name="chevron" /></button>
+          {props.providerOpen && <div className="provider-popover"><div className="provider-options"><label className="theater-option"><input type="checkbox" checked={props.filters.includeTheaters} onChange={() => props.setFilters((current) => ({ ...current, includeTheaters: !current.includeTheaters }))} />In theaters</label>{props.providers.slice(0, 12).map((provider) => <label key={provider.id}><input type="checkbox" checked={props.filters.providerIds.includes(provider.id)} onChange={() => props.setFilters((current) => ({ ...current, providerIds: current.providerIds.includes(provider.id) ? current.providerIds.filter((id) => id !== provider.id) : [...current.providerIds, provider.id] }))} />{provider.name}</label>)}</div>{!props.providers.length && <p className="provider-empty">Streaming providers are unavailable right now.</p>}</div>}
         </div>
       </div>
-      {props.prompt.trim().length >= 3 && props.promptExplanation && !props.loading && <p className="prompt-explanation">{props.promptExplanation}</p>}
+      {props.hasSubmittedPrompt && props.promptExplanation && !props.loading && <p className="prompt-explanation">{props.promptExplanation}</p>}
     </div>
     {props.error && <p className="quiet-notice">{props.error}</p>}
     <div className="pick-stage" aria-live="polite">
       {props.loading ? <>{[1, 2, 3].map((rank) => <div className={`pick-card skeleton-card rank-${rank}`} key={rank}><div className="poster-skeleton"/><div className="line-skeleton"/><div className="button-skeleton"/></div>)}</> : props.results.map((result, index) => <RecommendationCard key={result.movie.id} result={result} rank={index + 1} availability={props.availability[result.movie.id]} expanded={props.expandedReason === result.movie.id} onExpand={() => props.setExpandedReason(props.expandedReason === result.movie.id ? null : result.movie.id)} onWatched={() => props.onWatched(result.movie)} onSave={() => props.onSave(result.movie)} onPick={() => props.onPick(result)} onReject={() => props.onReject(result.movie)} saved={Boolean(props.watchlist[result.movie.id])} developerMode={props.developerMode} />)}
     </div>
-    {!props.loading && props.results.length === 0 && <div className="empty-state"><h2>{props.filters.providerIds.length ? "No verified matches" : "No matches found"}</h2><p>{props.prompt.trim() ? "Try a broader request or clear a filter." : "Try clearing a filter to widen the choices."}</p>{props.filters.providerIds.length > 0 && <button className="secondary-button" onClick={props.onClearStreaming}>Clear streaming filter</button>}</div>}
+    {props.hasSubmittedPrompt && !props.loading && props.results.length === 0 && <div className="empty-state"><h2>{props.filters.providerIds.length || props.filters.includeTheaters ? "No verified matches" : "No matches found"}</h2><p>Try a broader request or clear a filter.</p>{(props.filters.providerIds.length > 0 || props.filters.includeTheaters) && <button className="secondary-button" onClick={props.onClearStreaming}>Clear where-to-watch filter</button>}</div>}
     {props.results.length > 0 && <button className="show-more" onClick={props.onShowMore}>Show 3 more</button>}
   </section>;
+}
+
+function MultiSelectFilter({ label, values, options, onToggle }: { label: string; values: string[]; options: ReadonlyArray<readonly [string, string]>; onToggle: (value: string) => void }) {
+  return <details className="filter-menu" name="pick-filter"><summary className={values.length ? "filter-button is-active" : "filter-button"}>{label}{values.length ? ` · ${values.length}` : ""}<Icon name="chevron" /></summary><div className="filter-popover checkbox-options">{options.map(([value, optionLabel]) => <label key={value}><input type="checkbox" checked={values.includes(value)} onChange={() => onToggle(value)} />{optionLabel}</label>)}</div></details>;
+}
+
+function RuntimeFilter({ filters, setFilters }: { filters: PickFilters; setFilters: (updater: (current: PickFilters) => PickFilters) => void }) {
+  const constrained = filters.runtimeMin > 30 || filters.runtimeMax < 300;
+  const label = constrained ? `${filters.runtimeMin}–${filters.runtimeMax === 300 ? "300+" : filters.runtimeMax} min` : "Runtime";
+  const lowPosition = ((filters.runtimeMin - 30) / 270) * 100;
+  const highPosition = ((filters.runtimeMax - 30) / 270) * 100;
+  return <details className="filter-menu runtime-menu" name="pick-filter"><summary className={constrained ? "filter-button is-active" : "filter-button"}>{label}<Icon name="chevron" /></summary><div className="filter-popover runtime-popover"><div className="runtime-values"><span>{filters.runtimeMin} min</span><span>{filters.runtimeMax === 300 ? "300+ min" : `${filters.runtimeMax} min`}</span></div><div className="dual-range" style={{ "--range-start": `${lowPosition}%`, "--range-end": `${highPosition}%` } as CSSProperties}><input aria-label="Minimum runtime" type="range" min="30" max="300" step="5" value={filters.runtimeMin} onChange={(event) => setFilters((current) => ({ ...current, runtimeMin: Math.min(Number(event.target.value), current.runtimeMax - 5) }))} /><input aria-label="Maximum runtime" type="range" min="30" max="300" step="5" value={filters.runtimeMax} onChange={(event) => setFilters((current) => ({ ...current, runtimeMax: Math.max(Number(event.target.value), current.runtimeMin + 5) }))} /></div><button className="text-action" onClick={() => setFilters((current) => ({ ...current, runtimeMin: 30, runtimeMax: 300 }))}>Reset runtime</button></div></details>;
 }
 
 function RecommendationCard({ result, rank, availability, expanded, saved, onExpand, onWatched, onSave, onPick, onReject, developerMode }: { result: RecommendationResult; rank: number; availability?: StreamingAvailability; expanded: boolean; saved: boolean; onExpand: () => void; onWatched: () => void; onSave: () => void; onPick: () => void; onReject: () => void; developerMode: boolean }) {
@@ -721,7 +764,7 @@ function TasteView(props: { movie?: Movie; loading: boolean; error: string; deci
     </div>
     <div className="taste-lab"><div className="taste-summary"><h2>Your taste</h2>{props.signals.length ? <div className="taste-signals" aria-label="Current taste signals">{props.signals.slice(0, 6).map((signal) => <div className="taste-signal" key={signal.label}><span><strong>{signal.label}</strong><small>{signal.evidence} {signal.evidence === 1 ? "signal" : "signals"}</small></span><i><b style={{ width: `${Math.max(8, signal.weight * 100)}%` }}/></i></div>)}</div> : <p className="empty-copy">Ratings, reactions, and preferences will build your taste summary.</p>}
       <details className="preference-editor"><summary>Edit preferences</summary>{(["genres", "directors", "actors"] as const).map((kind) => <div className="preference-row" key={kind}><label>{kind[0].toUpperCase() + kind.slice(1)}<span><input value={preferenceDraft[kind]} onChange={(event) => setPreferenceDraft((current) => ({ ...current, [kind]: event.target.value }))} /><button onClick={() => { props.onPreference(kind, preferenceDraft[kind]); setPreferenceDraft((current) => ({ ...current, [kind]: "" })); }}>Add</button></span></label><div className="preference-tags">{props.preferences[kind].map((value) => <button key={value} onClick={() => props.onPreference(kind, value)}>{value} ×</button>)}</div></div>)}<div className="preference-row favorite-preference"><label>Favorite movies<span><input value={favoriteQuery} onChange={(event) => setFavoriteQuery(event.target.value)} placeholder="Search titles" /></span></label>{favoriteResults.length > 0 && <div className="favorite-results">{favoriteResults.map((movie) => <button key={movie.id} onClick={() => { props.onFavorite(movie); setFavoriteQuery(""); }}>{movie.title} <small>{movie.year}</small></button>)}</div>}<div className="preference-tags">{Object.values(props.preferences.favoriteMovies).map((movie) => <button key={movie.id} onClick={() => props.onFavorite(movie)}>{movie.title} ×</button>)}</div></div></details>
-      <details className="movie-map"><summary>See movie map</summary><p>Nearby movies share genres, people, keywords, and descriptions.</p><div className="map-field">{props.similarityPoints.map((point) => <button key={point.movie.id} title={point.movie.title} style={{ left: `${point.x}%`, top: `${point.y}%` }} className="map-dot"><span>{point.movie.title}</span></button>)}</div><small>Local metadata similarity · not audience behavior</small></details></div>
+      <details className="movie-map"><summary>See movie map</summary>{props.decisions >= 3 || props.preferences.genres.length + props.preferences.directors.length + props.preferences.actors.length >= 2 ? <><p>These are your 24 strongest current candidates. Horizontal position is release year; vertical position is the recommendation score built from your reactions, preferences, movie metadata, and quality signals.</p><div className="map-chart"><span className="map-y map-y-top">Stronger fit</span><span className="map-y map-y-bottom">Weaker fit</span><div className="map-field">{props.similarityPoints.points.map((point) => <button key={point.movie.id} aria-label={`${point.movie.title}, ${point.movie.year}, ${point.fitPercent}% recommendation fit`} style={{ left: `${point.x}%`, top: `${point.y}%` }} className="map-dot"><span>{point.movie.title}<small>{point.movie.year} · {point.fitPercent}% fit</small></span></button>)}</div><div className="map-x"><span>{props.similarityPoints.oldestYear || "Older"}</span><strong>Release year</strong><span>{props.similarityPoints.newestYear || "Newer"}</span></div></div><small>Fit is relative to your current private taste profile; positions update as you react and rate.</small></> : <p className="map-not-ready">Add at least two preferences or complete three Taste Sprint choices to create a meaningful map.</p>}</details></div>
       <div className="learning-log"><h2>Recently learned</h2>{props.events.slice(-6).reverse().map((event) => <div className="learning-row" key={event.id}><img src={posterUrl(event.movie.posterPath, "w92")} alt=""/><span><strong>{event.movie.title}</strong><small>{event.label}</small></span>{event.undoKey && <button onClick={() => props.onUndo(event)}>Undo</button>}</div>)}{!props.events.length && <p className="empty-copy">Your reactions will appear here.</p>}</div>
     </div>
   </section>;
@@ -761,23 +804,27 @@ function ConsentDialog({ onDecline, onAccept }: { onDecline: () => void; onAccep
   return <div className="modal-backdrop"><section className="compact-dialog consent-dialog" role="dialog" aria-modal="true"><h2>Use reviews to improve your picks?</h2><p>PickAMovie can privately analyze review text into editable taste signals. Your reviews are not shared with other users or used for cross-user learning.</p><div><button className="secondary-button" onClick={onDecline}>Not now</button><button className="primary-button" onClick={onAccept}>Use my reviews</button></div></section></div>;
 }
 
-function OnboardingTour({ slide, setSlide, onClose }: { slide: number; setSlide: (slide: number) => void; onClose: () => void }) {
+function OnboardingTour({ slide, setSlide, onClose, preferences, onPreference, sprintMovie, sprintLoading, sprintDecisions, onSprintAnswer, onRetrySprint }: { slide: number; setSlide: (slide: number) => void; onClose: () => void; preferences: OnboardingPreferences; onPreference: (kind: "genres" | "directors" | "actors", value: string) => void; sprintMovie?: Movie; sprintLoading: boolean; sprintDecisions: number; onSprintAnswer: (movie: Movie, value: InterestValue) => void; onRetrySprint: () => void }) {
   const touchStart = useRef<number | null>(null);
+  const [preferenceDraft, setPreferenceDraft] = useState({ directors: "", actors: "" });
+  const onboardingGenres = ["Comedy", "Drama", "Thriller", "Horror", "Romance", "Science Fiction", "Animation"];
   const slides = [
     { title: "Pick something great", caption: "Three recommendations for tonight. Add filters when you need them.", preview: <MiniPick/> },
-    { title: "Shape your taste", caption: "Interested, Maybe, or Not for me. Every choice sharpens the next picks.", preview: <MiniTaste/> },
+    { title: "Start with what you like", caption: "Choose genres and add any directors or actors you already know you enjoy.", preview: <div className="onboarding-preferences"><div className="onboarding-genres">{onboardingGenres.map((genre) => <button key={genre} className={preferences.genres.includes(genre) ? "is-selected" : ""} onClick={() => onPreference("genres", genre)}>{genre}</button>)}</div>{(["directors", "actors"] as const).map((kind) => <div className="onboarding-person" key={kind}><label>{kind === "directors" ? "Directors you like" : "Actors you like"}<span><input value={preferenceDraft[kind]} onChange={(event) => setPreferenceDraft((current) => ({ ...current, [kind]: event.target.value }))} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); onPreference(kind, preferenceDraft[kind]); setPreferenceDraft((current) => ({ ...current, [kind]: "" })); } }} placeholder={kind === "directors" ? "e.g. Greta Gerwig" : "e.g. Daniel Kaluuya"}/><button onClick={() => { onPreference(kind, preferenceDraft[kind]); setPreferenceDraft((current) => ({ ...current, [kind]: "" })); }}>Add</button></span></label><div className="preference-tags">{preferences[kind].map((value) => <button key={value} onClick={() => onPreference(kind, value)}>{value} ×</button>)}</div></div>)}</div> },
+    { title: "Complete your Taste Sprint", caption: `${Math.min(sprintDecisions, 10)} of 10 choices · every reaction shapes your recommendations.`, preview: <div className="onboarding-sprint">{sprintMovie ? <><img src={posterUrl(sprintMovie.posterPath, "w342")} alt={`Poster for ${sprintMovie.title}`}/><div><strong>{sprintMovie.title}</strong><small>{sprintMovie.year} · {sprintMovie.genres.slice(0, 2).join(" · ")}</small>{sprintDecisions < 10 && <><button onClick={() => onSprintAnswer(sprintMovie, "interested")}>Interested</button><button onClick={() => onSprintAnswer(sprintMovie, "maybe")}>Maybe</button><button onClick={() => onSprintAnswer(sprintMovie, "notInterested")}>Not for me</button></>}</div></> : <div className="onboarding-sprint-empty"><p>{sprintLoading ? "Finding a movie…" : "The next movie could not be loaded."}</p>{!sprintLoading && <button className="secondary-button" onClick={onRetrySprint}>Try again</button>}</div>}<div className="onboarding-sprint-progress">{Array.from({ length: 10 }, (_, index) => <i key={index} className={index < sprintDecisions ? "is-filled" : ""}/>)}</div></div> },
     { title: "Keep track", caption: "Save ideas, rate what you’ve watched, and keep everything together.", preview: <MiniLibrary/> },
   ];
   const current = slides[slide];
   useEffect(() => {
-    const listener = (event: KeyboardEvent) => { if (event.key === "ArrowRight") setSlide(Math.min(slide + 1, 2)); if (event.key === "ArrowLeft") setSlide(Math.max(slide - 1, 0)); if (event.key === "Escape") onClose(); };
+    const listener = (event: KeyboardEvent) => { if (event.key === "ArrowRight" && !(slide === 2 && sprintDecisions < 10)) setSlide(Math.min(slide + 1, 3)); if (event.key === "ArrowLeft") setSlide(Math.max(slide - 1, 0)); if (event.key === "Escape") onClose(); };
     window.addEventListener("keydown", listener); return () => window.removeEventListener("keydown", listener);
-  }, [slide, setSlide, onClose]);
-  return <div className="tour-backdrop"><section className="tour" role="dialog" aria-modal="true" aria-labelledby="tour-title" onTouchStart={(event) => { touchStart.current = event.changedTouches[0]?.clientX ?? null; }} onTouchEnd={(event) => { const start = touchStart.current; const end = event.changedTouches[0]?.clientX; touchStart.current = null; if (start === null || end === undefined || Math.abs(start - end) < 45) return; setSlide(start > end ? Math.min(2, slide + 1) : Math.max(0, slide - 1)); }}><button className="tour-skip" onClick={onClose}>Skip</button><div className="tour-preview">{current.preview}</div><div className="tour-copy"><h1 id="tour-title">{current.title}</h1><p>{current.caption}</p></div><div className="tour-controls"><button className="secondary-button" onClick={() => setSlide(Math.max(0, slide - 1))} disabled={slide === 0}>Back</button><div className="tour-dots" aria-label="Onboarding progress">{slides.map((item, index) => <button key={item.title} className={index === slide ? "is-active" : ""} onClick={() => setSlide(index)} aria-label={`Go to slide ${index + 1}`} />)}</div><button className="primary-button" onClick={() => slide === 2 ? onClose() : setSlide(slide + 1)}>{slide === 2 ? "Start picking" : "Next"}</button></div></section></div>;
+  }, [slide, sprintDecisions, setSlide, onClose]);
+  const sprintIncomplete = slide === 2 && sprintDecisions < 10;
+  return <div className="tour-backdrop"><section className="tour" role="dialog" aria-modal="true" aria-labelledby="tour-title" onTouchStart={(event) => { touchStart.current = event.changedTouches[0]?.clientX ?? null; }} onTouchEnd={(event) => { const start = touchStart.current; const end = event.changedTouches[0]?.clientX; touchStart.current = null; if (start === null || end === undefined || Math.abs(start - end) < 45) return; if (start > end && sprintIncomplete) return; setSlide(start > end ? Math.min(3, slide + 1) : Math.max(0, slide - 1)); }}><button className="tour-skip" onClick={onClose}>Skip for now</button><div className="tour-preview">{current.preview}</div><div className="tour-copy"><h1 id="tour-title">{current.title}</h1><p>{current.caption}</p></div><div className="tour-controls"><button className="secondary-button" onClick={() => setSlide(Math.max(0, slide - 1))} disabled={slide === 0}>Back</button><div className="tour-dots" aria-label="Onboarding progress">{slides.map((item, index) => <button key={item.title} className={index === slide ? "is-active" : ""} onClick={() => { if (index <= slide || !sprintIncomplete) setSlide(index); }} aria-label={`Go to step ${index + 1}`} />)}</div><button className="primary-button" disabled={sprintIncomplete} onClick={() => slide === 3 ? onClose() : setSlide(slide + 1)}>{slide === 3 ? "Start picking" : sprintIncomplete ? `${10 - sprintDecisions} choices left` : "Next"}</button></div></section></div>;
 }
 
 function MiniHeader({ active }: { active: Tab }) { return <div className="mini-header"><b>PickAMovie</b>{(["pick", "taste", "library"] as Tab[]).map((item) => <i key={item} className={item === active ? "is-active" : ""}>{item}</i>)}</div>; }
-function MiniPick() { const movies = [fallbackMovies[1], fallbackMovies[0], fallbackMovies[4]]; return <div className="mini-ui mini-pick"><MiniHeader active="pick"/><div className="mini-search">What sounds good tonight?</div><div className="mini-filters"><i>Mood</i><i>Runtime</i><i>Genre</i><i>Streaming</i></div><div className="mini-posters">{movies.map((movie, index) => <span className={index === 1 ? "is-main" : ""} key={movie.id}><img src={posterUrl(movie.posterPath, "w342")} alt=""/><b>{index + 1}</b><small>{movie.title}</small></span>)}</div><em className="callout callout-one">Add filters</em><em className="callout callout-two">Choose your movie</em></div>; }
+function MiniPick() { const movies = [fallbackMovies[1], fallbackMovies[0], fallbackMovies[4]]; return <div className="mini-ui mini-pick"><MiniHeader active="pick"/><div className="mini-search">What sounds good tonight?</div><div className="mini-filters"><i>Runtime</i><i>Genre</i><i>Era</i><i>Where to watch</i></div><div className="mini-posters">{movies.map((movie, index) => <span className={index === 1 ? "is-main" : ""} key={movie.id}><img src={posterUrl(movie.posterPath, "w342")} alt=""/><b>{index + 1}</b><small>{movie.title}</small></span>)}</div><em className="callout callout-one">Add filters</em><em className="callout callout-two">Choose your movie</em></div>; }
 function MiniTaste() { const movie = fallbackMovies[2]; return <div className="mini-ui mini-taste"><MiniHeader active="taste"/><h3>Taste Sprint</h3><div className="mini-taste-content"><img src={posterUrl(movie.posterPath, "w342")} alt=""/><div><strong>{movie.title}</strong><i>Interested</i><i>Maybe</i><i>Not for me</i></div></div><em className="callout callout-two">Every reaction shapes your taste</em></div>; }
 function MiniLibrary() { return <div className="mini-ui mini-library"><MiniHeader active="library"/><h3>Library</h3><div className="mini-library-filters"><i>All</i><i>Watched</i><i>Watchlist</i><i>Rated</i></div><div className="mini-library-grid">{fallbackMovies.slice(0, 8).map((movie) => <span key={movie.id}><img src={posterUrl(movie.posterPath, "w342")} alt=""/></span>)}</div><em className="callout callout-one">Everything stays private</em></div>; }
 
