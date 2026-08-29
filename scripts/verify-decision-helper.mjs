@@ -7,6 +7,7 @@ import { buildRatingCalibration, ratingToPercent } from "../src/services/ratingC
 import { arrangeWatchlistCandidates } from "../src/services/recommendations.ts";
 import { filterAndSortLibraryMovies } from "../src/services/library.ts";
 import { removeWatchedOutcome } from "../src/services/unwatch.ts";
+import { buildTasteProfileSample, REAL_TIME_TASTE_MOVIE_LIMIT } from "../src/services/tasteProfileSample.ts";
 
 const movie = (id, title, year, genres = ["Drama"], extra = {}) => ({ id, title, year: String(year), posterPath: `/p${id}.jpg`, overview: `${title} ${genres.join(" ")}`, genres, voteAverage: 7, voteCount: 1000, popularity: 40, ...extra });
 
@@ -39,7 +40,18 @@ assert.ok(firstMerge.watchlist[99], "existing watchlist entries absent from the 
 assert.equal(firstMerge.watchlist[3], undefined, "a movie imported as watched is removed from the watchlist");
 assert.ok(firstMerge.likes[2], "liked films import into the distinct Likes map");
 assert.ok(firstMerge.likes[99], "re-import omissions never remove existing local Likes");
-assert.ok(firstMerge.touched.includes("like:2"), "Like imports participate in field-update syncing");
+assert.ok(firstMerge.touched.includes("like:*"), "Like imports use a compact bulk field-update marker");
+
+const largeHistory = Array.from({ length: 5_000 }, (_, index) => movie(10_000 + index, `History ${index}`, 1950 + index % 75));
+const largeRatings = Object.fromEntries(largeHistory.map((item, index) => [item.id, .5 + index % 10 * .5]));
+const largeWatched = Object.fromEntries(largeHistory.map((item, index) => [item.id, { movie: item, watchedAt: index }]));
+const tasteSample = buildTasteProfileSample({ ratings: largeRatings, likes: {}, watchlist: {}, watched: largeWatched, interest: {}, preferences: { genres: [], directors: [], actors: [], favoriteMovies: {} } });
+assert.equal(tasteSample.length, REAL_TIME_TASTE_MOVIE_LIMIT, "real-time taste work stays bounded for profiles with thousands of movies");
+assert.equal(new Set(tasteSample.map((item) => largeRatings[item.id])).size, 10, "the bounded sample preserves the user's full rating range");
+const largeRows = largeHistory.map((item, index) => ({ row: index + 2, title: item.title, year: item.year, rating: largeRatings[item.id], watched: true, matchedMovie: item, status: "matched" }));
+const largeMerge = mergeImportedRows(largeRows, { ratings: {}, likes: {}, reviews: {}, watched: {}, watchlist: {} }, 123);
+assert.equal(Object.keys(largeMerge.watched).length, 5_000);
+assert.ok(largeMerge.touched.length < 10, "large imports do not create thousands of field-update metadata entries");
 
 const ratedMovies = Array.from({ length: 9 }, (_, index) => movie(100 + index, `Rated ${index}`, 1990 + index, index % 2 ? ["Comedy"] : ["Drama"]));
 const ratings = Object.fromEntries(ratedMovies.map((item, index) => [item.id, 2.5 + (index % 5) * .5]));
@@ -128,6 +140,8 @@ assert.match(supabaseSource, /skipBrowserRedirect: true/);
 assert.doesNotMatch(appSource, /Developer options/);
 assert.match(appSource, /Update Letterboxd/);
 assert.match(appSource, /Prediction Score/);
+assert.match(appSource, /new Worker\(new URL\("\.\/workers\/ratingModelWorker\.ts"/, "prediction calibration runs outside the main UI thread");
+assert.match(appSource, /Checking your ratings…/, "large prediction updates expose a responsive progress state");
 assert.match(appSource, /!detailMovie \|\| watched\[detailMovie\.id\]/, "watched movie popups suppress predictions in favor of actual ratings");
 assert.match(appSource, /!props\.watched && props\.prediction[^\n]*Predicted for you[^\n]*StarRating[^\n]*readOnly/, "unwatched movie popups render predicted star ratings");
 assert.doesNotMatch(appSource, /Usually within/);

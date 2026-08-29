@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { buildRatingCalibration, predictCandidateRatings } from "../src/services/ratingCalibration.ts";
+import { buildRatingCalibration, createRatingCalibrationSample, predictCandidateRatings, RATING_CALIBRATION_SAMPLE_LIMIT } from "../src/services/ratingCalibration.ts";
 import { pairwiseOrderingAccuracy, spearmanCorrelation, trainRatingModelTournament } from "../src/services/personalRatingModel.ts";
 
 const clamp = (value, minimum, maximum) => Math.max(minimum, Math.min(maximum, value));
@@ -78,5 +78,16 @@ assert.equal(spearmanCorrelation([1, 2, 3], [1, 2, 3]), 1);
 assert.equal(spearmanCorrelation([1, 2, 3], [3, 2, 1]), -1);
 assert.equal(pairwiseOrderingAccuracy([1, 2, 3], [1, 2, 3]), 1);
 assert.equal(trainRatingModelTournament(entries, model).label, trainRatingModelTournament(entries, model).label);
+
+const largeEntries = Array.from({ length: 5_000 }, (_, index) => {
+  const item = movie(20_000 + index, index % 2 ? .8 : -.8);
+  return { movie: item, rating: .5 + index % 10 * .5, watchedAt: index + 1 };
+});
+const largeRatings = Object.fromEntries(largeEntries.map((entry) => [entry.movie.id, entry.rating]));
+const largeWatched = Object.fromEntries(largeEntries.map((entry) => [entry.movie.id, { movie: entry.movie, watchedAt: entry.watchedAt }]));
+const largeSample = createRatingCalibrationSample(largeRatings, largeWatched);
+assert.equal(largeSample.movies.length, RATING_CALIBRATION_SAMPLE_LIMIT, "large profiles send only a bounded sample to the prediction worker");
+assert.equal(new Set(Object.values(largeSample.ratings)).size, 10, "the graph sample preserves every used half-star rating level");
+assert.equal(buildRatingCalibration(largeSample.movies, largeSample.ratings, largeSample.watched).points.length, RATING_CALIBRATION_SAMPLE_LIMIT, "large-profile graphs never render thousands of points");
 
 console.log("Personal rating model tournament and honest score checks passed.");

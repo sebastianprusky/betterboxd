@@ -456,9 +456,6 @@ summary { color: var(--accent); cursor: pointer; font-size: .83rem; font-weight:
 .onboarding-import > small, .onboarding-import > span { max-width: 48ch; color: var(--muted); font-size: .72rem; line-height: 1.5; }
 .onboarding-import-primary { min-width: min(20rem, 100%); cursor: pointer; }
 .onboarding-import-primary input { display: none; }
-.import-success { display: grid; gap: .35rem; padding: 1rem 1.2rem; border: 1px solid color-mix(in srgb, var(--accent) 38%, var(--line)); border-radius: .7rem; background: var(--accent-soft); }
-.import-success strong { font-family: var(--serif); font-size: 1.2rem; }
-.import-success span { color: var(--muted); font-size: .74rem; }
 .onboarding-preferences { width: min(42rem, 100%); display: grid; gap: 1.15rem; padding: 1rem; }
 .manual-setup-divider { width: min(24rem, 100%); display: flex; align-items: center; gap: .7rem; color: var(--muted); font-size: .72rem; }
 .manual-setup-divider::before, .manual-setup-divider::after { content: ""; height: 1px; flex: 1; background: var(--line); }

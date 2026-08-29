@@ -64,4 +64,12 @@ assert.equal("3" in mergeGuestAndAccountState(accountDeletion, staleGuestValue).
 const likeDeletion = { ...account, likes: {}, fieldUpdatedAt: { "like:1": 50 }, stateUpdatedAt: 50 };
 assert.equal("1" in mergeGuestAndAccountState(likeDeletion, guest).likes, false, "a newer Like deletion remains deleted");
 
+const bulkGuest = { ...guest, ratings: { "2": 4, "3": 5 }, fieldUpdatedAt: { "rating:*": 60 }, stateUpdatedAt: 60 };
+const bulkMerged = mergeGuestAndAccountState(account, bulkGuest);
+assert.equal(bulkMerged.ratings[1], 2, "a bulk import marker does not delete account movies omitted from the import");
+assert.equal(bulkMerged.ratings[2], 4, "a bulk import marker timestamps imported values without per-movie metadata");
+assert.equal(bulkMerged.ratings[3], 5, "newer bulk-imported values win deterministic conflicts");
+assert.ok("rating:*" in bulkMerged.fieldUpdatedAt);
+assert.ok(Object.keys(bulkMerged.fieldUpdatedAt).length < 25, "bulk markers remain compact after account merging");
+
 console.log("account merge verification passed");

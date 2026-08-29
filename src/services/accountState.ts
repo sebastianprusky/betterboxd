@@ -26,7 +26,13 @@ export const emptyCloudState: CloudUserState = {
 };
 
 function updatedAt(state: CloudUserState, key: string, fallback: number) {
-  return state.fieldUpdatedAt?.[key] || fallback;
+  const prefix = key.slice(0, key.indexOf(":"));
+  return state.fieldUpdatedAt?.[key] || state.fieldUpdatedAt?.[`${prefix}:*`] || fallback;
+}
+
+function isTouched(state: CloudUserState, key: string, hasValue: boolean) {
+  const prefix = key.slice(0, key.indexOf(":"));
+  return key in (state.fieldUpdatedAt || {}) || (hasValue && `${prefix}:*` in (state.fieldUpdatedAt || {}));
 }
 
 function mergeRecord<T>(
@@ -40,16 +46,17 @@ function mergeRecord<T>(
   const timestamps: Record<string, number> = {};
   const metadataKeys = [...Object.keys(accountState.fieldUpdatedAt || {}), ...Object.keys(guestState.fieldUpdatedAt || {})]
     .filter((key) => key.startsWith(`${prefix}:`))
-    .map((key) => key.slice(prefix.length + 1));
+    .map((key) => key.slice(prefix.length + 1))
+    .filter((key) => key !== "*");
   const keys = new Set([...Object.keys(account), ...Object.keys(guest), ...metadataKeys]);
 
   keys.forEach((key) => {
     const accountTime = updatedAt(accountState, `${prefix}:${key}`, 0);
     const guestTime = updatedAt(guestState, `${prefix}:${key}`, 0);
-    const accountTouched = `${prefix}:${key}` in (accountState.fieldUpdatedAt || {});
-    const guestTouched = `${prefix}:${key}` in (guestState.fieldUpdatedAt || {});
     const accountHasValue = key in account;
     const guestHasValue = key in guest;
+    const accountTouched = isTouched(accountState, `${prefix}:${key}`, accountHasValue);
+    const guestTouched = isTouched(guestState, `${prefix}:${key}`, guestHasValue);
     const useGuest = guestTouched && (!accountTouched || guestTime > accountTime);
     const useAccount = accountTouched && (!guestTouched || accountTime >= guestTime);
     if (useGuest && guestHasValue) merged[key] = guest[key];
@@ -58,7 +65,10 @@ function mergeRecord<T>(
       if (accountHasValue) merged[key] = account[key];
       else if (guestHasValue) merged[key] = guest[key];
     }
-    timestamps[`${prefix}:${key}`] = Math.max(accountTime, guestTime);
+    const exactKey = `${prefix}:${key}`;
+    const hasExactTimestamp = exactKey in (accountState.fieldUpdatedAt || {}) || exactKey in (guestState.fieldUpdatedAt || {});
+    const hasBulkTimestamp = `${prefix}:*` in (accountState.fieldUpdatedAt || {}) || `${prefix}:*` in (guestState.fieldUpdatedAt || {});
+    if (hasExactTimestamp || (!hasBulkTimestamp && (accountHasValue || guestHasValue))) timestamps[exactKey] = Math.max(accountTime, guestTime);
   });
 
   return { merged, timestamps };

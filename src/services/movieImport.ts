@@ -21,16 +21,22 @@ export function mergeImportedRows(rows: CsvImportRow[], current: { ratings: Rati
   const watched = { ...current.watched };
   const watchlist = { ...current.watchlist };
   const touched = new Set<string>(["csv-import"]);
+  const bulkTouched = new Set<string>();
   rows.forEach((row) => {
     const movie = row.matchedMovie;
     if (!movie) return;
-    if (row.watched || row.rating) { watched[movie.id] ||= { movie, watchedAt: now }; touched.add(`watched:${movie.id}`); touched.add(`watchlist:${movie.id}`); delete watchlist[movie.id]; }
-    if (row.rating !== undefined) { ratings[movie.id] = row.rating; touched.add(`rating:${movie.id}`); }
-    if (row.liked) { likes[movie.id] = movie; touched.add(`like:${movie.id}`); }
-    if (row.review) { reviews[movie.id] = row.review; touched.add(`review:${movie.id}`); }
-    if (row.saved && !watched[movie.id]) { watchlist[movie.id] = movie; touched.add(`watchlist:${movie.id}`); }
+    if (row.watched || row.rating) {
+      watched[movie.id] ||= { movie, watchedAt: now };
+      bulkTouched.add("watched:*");
+      if (current.watchlist[movie.id]) touched.add(`watchlist:${movie.id}`);
+      delete watchlist[movie.id];
+    }
+    if (row.rating !== undefined) { ratings[movie.id] = row.rating; bulkTouched.add("rating:*"); }
+    if (row.liked) { likes[movie.id] = movie; bulkTouched.add("like:*"); }
+    if (row.review) { reviews[movie.id] = row.review; bulkTouched.add("review:*"); }
+    if (row.saved && !watched[movie.id]) { watchlist[movie.id] = movie; bulkTouched.add("watchlist:*"); }
   });
-  return { ratings, likes, reviews, watched, watchlist: excludeWatchedFromWatchlist(watchlist, watched), touched: [...touched] };
+  return { ratings, likes, reviews, watched, watchlist: excludeWatchedFromWatchlist(watchlist, watched), touched: [...touched, ...bulkTouched] };
 }
 
 export async function parseMovieImportFile(file: File, catalog: Movie[]): Promise<{ rows: CsvImportRow[]; summary: MovieImportSummary }> {

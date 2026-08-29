@@ -37,6 +37,7 @@ export { decayingPickWeight, getRatingSignal } from "./recommendationPolicy";
 
 export function recommendMovies({
   movies,
+  tasteMovies = movies,
   ratings,
   likes = {},
   watchlist,
@@ -56,6 +57,7 @@ export function recommendMovies({
   limit = 18,
 }: {
   movies: Movie[];
+  tasteMovies?: Movie[];
   ratings: RatingMap;
   likes?: LikedMap;
   watchlist: WatchlistMap;
@@ -74,11 +76,11 @@ export function recommendMovies({
   excludedIds?: number[];
   limit?: number;
 }): RecommendationResult[] {
-  const userVector = buildUserVector({ movies, ratings, likes, watchlist, interest, preferences, pickIntents, reviewInsights });
+  const userVector = buildUserVector({ movies: tasteMovies, ratings, likes, watchlist, interest, preferences, pickIntents, reviewInsights });
   const preferredGenres = new Set(preferences.genres.map(normalize));
   const preferredDirectors = new Set(preferences.directors.map(normalize));
   const preferredActors = new Set((preferences.actors || []).map(normalize));
-  const likedMovies = movies.filter((movie) => (ratings[movie.id] || 0) >= 4 || Boolean(likes[movie.id]) || Boolean(preferences.favoriteMovies[movie.id]) || interest[movie.id]?.value === "interested");
+  const likedMovies = tasteMovies.filter((movie) => (ratings[movie.id] || 0) >= 4 || Boolean(likes[movie.id]) || Boolean(preferences.favoriteMovies[movie.id]) || interest[movie.id]?.value === "interested");
   const seenMovieIds = new Set<number>();
   const uniqueMovies = movies.filter((movie) => {
     if (seenMovieIds.has(movie.id)) return false;
@@ -323,17 +325,23 @@ function movieVector(movie: Movie) {
 function diversityRerank(results: RecommendationResult[], mode: RecommendationMode, limit: number, promptActive = false) {
   const selected: RecommendationResult[] = [];
   const remaining = [...results];
+  const maximumSimilarity = new Map<number, number>();
   const basePenalty = mode === "focused" ? 0.05 : mode === "exploratory" ? 0.17 : 0.11;
   const penalty = promptActive ? basePenalty * 0.25 : basePenalty;
   while (selected.length < limit && remaining.length) {
     let bestIndex = 0;
     let bestScore = Number.NEGATIVE_INFINITY;
     remaining.forEach((result, index) => {
-      const duplicate = selected.reduce((max, item) => Math.max(max, clamp01((cosineSimilarity(movieVector(result.movie), movieVector(item.movie)) + 1) / 2)), 0);
+      const duplicate = maximumSimilarity.get(result.movie.id) || 0;
       const adjusted = result.score - duplicate * penalty;
       if (adjusted > bestScore) { bestScore = adjusted; bestIndex = index; }
     });
-    selected.push(remaining.splice(bestIndex, 1)[0]);
+    const next = remaining.splice(bestIndex, 1)[0];
+    selected.push(next);
+    remaining.forEach((result) => {
+      const similarity = clamp01((cosineSimilarity(movieVector(result.movie), movieVector(next.movie)) + 1) / 2);
+      if (similarity > (maximumSimilarity.get(result.movie.id) || 0)) maximumSimilarity.set(result.movie.id, similarity);
+    });
   }
   return selected;
 }

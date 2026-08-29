@@ -3,6 +3,7 @@ import type { InterestMap, LikedMap, Movie, OnboardingPreferences, PickIntentEve
 import { baselinePredictions, nestedHeldOutPredictions, pairwiseOrderingAccuracy, spearmanCorrelation, trainRatingModelTournament, type RatingTrainingEntry } from "./personalRatingModel";
 
 type RatedMovie = RatingTrainingEntry;
+export const RATING_CALIBRATION_SAMPLE_LIMIT = 60;
 
 export type RatingCalibration = {
   points: RatingPredictionPoint[];
@@ -82,6 +83,15 @@ export function buildRatingCalibration(movies: Movie[], ratings: RatingMap, watc
   };
 }
 
+export function createRatingCalibrationSample(ratings: RatingMap, watched: WatchedMap, limit = RATING_CALIBRATION_SAMPLE_LIMIT) {
+  const entries = calibrationSample(ratedMovies([], ratings, watched), limit);
+  return {
+    movies: entries.map((entry) => entry.movie),
+    ratings: Object.fromEntries(entries.map((entry) => [entry.movie.id, entry.rating])) as RatingMap,
+    watched: Object.fromEntries(entries.map((entry) => [entry.movie.id, { movie: entry.movie, watchedAt: entry.watchedAt }])) as WatchedMap,
+  };
+}
+
 export function predictCandidateRatings(movies: Movie[], ratings: RatingMap, watched: WatchedMap, model: CollaborativeModel | null) {
   const training = ratedMovies(movies, ratings, watched);
   const tournament = trainRatingModelTournament(calibrationSample(training), model);
@@ -123,7 +133,31 @@ function ratedMovies(movies: Movie[], ratings: RatingMap, watched: WatchedMap) {
   const byId = new Map(movies.map((movie) => [movie.id, movie]));
   return Object.entries(ratings).flatMap(([rawId, rating]) => { const id = Number(rawId); const watchedEntry = watched[id]; const movie = watchedEntry?.movie || byId.get(id); return movie && watchedEntry && rating > 0 ? [{ movie, rating, watchedAt: watchedEntry.watchedAt || 0 }] : []; });
 }
-function calibrationSample(entries: RatedMovie[], limit = 60) { return [...entries].sort((a, b) => b.watchedAt - a.watchedAt || a.movie.id - b.movie.id).slice(0, limit); }
+function calibrationSample(entries: RatedMovie[], limit = RATING_CALIBRATION_SAMPLE_LIMIT) {
+  if (entries.length <= limit) return [...entries].sort((a, b) => b.watchedAt - a.watchedAt || a.movie.id - b.movie.id);
+  const buckets = new Map<number, RatedMovie[]>();
+  entries.forEach((entry) => {
+    const key = Math.round(entry.rating * 2);
+    const bucket = buckets.get(key) || [];
+    bucket.push(entry);
+    buckets.set(key, bucket);
+  });
+  buckets.forEach((bucket) => bucket.sort((left, right) => right.watchedAt - left.watchedAt || left.movie.id - right.movie.id));
+  const keys = [...buckets.keys()].sort((left, right) => left - right);
+  const sampled: RatedMovie[] = [];
+  for (let row = 0; sampled.length < limit; row += 1) {
+    let found = false;
+    for (const key of keys) {
+      const entry = buckets.get(key)?.[row];
+      if (!entry) continue;
+      found = true;
+      sampled.push(entry);
+      if (sampled.length >= limit) break;
+    }
+    if (!found) break;
+  }
+  return sampled;
+}
 function decade(year: string) { const parsed = Number(year); return Number.isFinite(parsed) && parsed > 1800 ? `${Math.floor(parsed / 10) * 10}s` : ""; }
 function normalize(value: string) { return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim(); }
 function mean(values: number[]) { return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : 0; }
