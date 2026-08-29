@@ -1,4 +1,4 @@
-import type { InterestMap, Movie, OnboardingPreferences, RatingMap, ReviewInsightMap } from "../types";
+import type { InterestMap, LikedMap, Movie, OnboardingPreferences, RatingMap, ReviewInsightMap } from "../types";
 import type { RecommendationResult } from "./recommendations";
 
 export type TasteSprintCandidate = {
@@ -14,6 +14,7 @@ export type TasteSprintCandidate = {
 export function rankTasteSprintCandidates({
   results,
   ratings,
+  likes = {},
   interest,
   preferences,
   reviewInsights,
@@ -21,13 +22,14 @@ export function rankTasteSprintCandidates({
 }: {
   results: RecommendationResult[];
   ratings: RatingMap;
+  likes?: LikedMap;
   interest: InterestMap;
   preferences: OnboardingPreferences;
   reviewInsights: ReviewInsightMap;
   recentMovies?: Movie[];
 }): TasteSprintCandidate[] {
-  const evidence = buildEvidenceCounts(ratings, interest, preferences, reviewInsights);
-  const hasTaste = Object.keys(ratings).length + Object.keys(interest).length + preferences.genres.length + preferences.directors.length + preferences.actors.length + Object.keys(preferences.favoriteMovies).length > 0;
+  const evidence = buildEvidenceCounts(ratings, likes, interest, preferences, reviewInsights);
+  const hasTaste = Object.keys(ratings).length + Object.keys(likes).length + Object.keys(interest).length + preferences.genres.length + preferences.directors.length + preferences.actors.length + Object.keys(preferences.favoriteMovies).length > 0;
   return results.map((result) => {
     const taste = result.signals.find((signal) => signal.label === "Your taste")?.value ?? .5;
     const uncertainty = hasTaste ? 1 - Math.min(1, Math.abs(taste - .5) * 2) : .72;
@@ -43,13 +45,14 @@ export function rankTasteSprintCandidates({
   }).sort((a, b) => b.utility - a.utility || b.answerability - a.answerability || a.movie.title.localeCompare(b.movie.title));
 }
 
-function buildEvidenceCounts(ratings: RatingMap, interest: InterestMap, preferences: OnboardingPreferences, reviewInsights: ReviewInsightMap) {
+function buildEvidenceCounts(ratings: RatingMap, likes: LikedMap, interest: InterestMap, preferences: OnboardingPreferences, reviewInsights: ReviewInsightMap) {
   const counts = new Map<string, number>();
   const add = (trait: string, amount = 1) => counts.set(normalize(trait), (counts.get(normalize(trait)) || 0) + amount);
   preferences.genres.forEach((value) => add(`genre:${value}`, 2));
   preferences.directors.forEach((value) => add(`director:${value}`, 2));
   preferences.actors.forEach((value) => add(`person:${value}`, 2));
   Object.values(preferences.favoriteMovies).forEach((movie) => movieTraits(movie).forEach((trait) => add(trait, 2)));
+  Object.values(likes).forEach((movie) => movieTraits(movie).forEach((trait) => add(trait, 1.5)));
   Object.entries(ratings).forEach(([id]) => add(`movie:${id}`, 2));
   Object.values(interest).forEach(({ movie }) => movieTraits(movie).forEach((trait) => add(trait)));
   Object.values(reviewInsights).flat().forEach((aspect) => add(`keyword:${aspect.label}`));

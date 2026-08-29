@@ -1,0 +1,39 @@
+{
+  "generatedAt": "2026-08-29",
+  "source": "https://files.grouplens.org/datasets/movielens/ml-latest-small.zip",
+  "profiles": [
+    {
+      "file": "wide-ranging-cinephile.zip",
+      "profile": "Wide-Ranging Cinephile",
+      "summary": "Broad, adventurous taste with strong opinions across genres and decades.",
+      "ratings": 160,
+      "watched": 195,
+      "diary": 120,
+      "reviews": 80,
+      "watchlist": 45,
+      "likes": 35
+    },
+    {
+      "file": "midnight-genre-fan.zip",
+      "profile": "Midnight Genre Fan",
+      "summary": "Strong preference for horror, science fiction, thrillers, fantasy, and animation.",
+      "ratings": 160,
+      "watched": 195,
+      "diary": 120,
+      "reviews": 80,
+      "watchlist": 45,
+      "likes": 33
+    },
+    {
+      "file": "comfort-blockbuster-fan.zip",
+      "profile": "Comfort & Blockbuster Fan",
+      "summary": "Warm, accessible taste favoring comedy, adventure, family films, and crowd-pleasers.",
+      "ratings": 160,
+      "watched": 195,
+      "diary": 120,
+      "reviews": 80,
+      "watchlist": 45,
+      "likes": 35
+    }
+  ]
+}

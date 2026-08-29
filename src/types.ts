@@ -2,11 +2,14 @@ export type Tab = "pick" | "taste" | "library";
 export type Theme = "light" | "dark";
 export type InterestValue = "interested" | "maybe" | "notInterested";
 export type RecommendationMode = "focused" | "balanced" | "exploratory";
-export type LibraryFilter = "watched" | "watchlist" | "rated";
+export type LibraryFilter = "watched" | "watchlist";
+export type LibraryWatchedFilter = "all" | "liked";
+export type LibrarySort = "recent" | "rating-high" | "rating-low" | "title" | "year-newest";
 
 export type Movie = {
   id: number;
   title: string;
+  originalTitle?: string;
   year: string;
   posterPath: string | null;
   backdropPath?: string | null;
@@ -52,6 +55,7 @@ export type PickFilters = {
   region: string;
   providerIds: number[];
   includeTheaters: boolean;
+  includeWatchlist: boolean;
 };
 
 export type MovieDebugInfo = {
@@ -85,6 +89,7 @@ export type AskPickAMovieResult = {
 };
 
 export type RatingMap = Record<string, number>;
+export type LikedMap = Record<string, Movie>;
 export type WatchlistMap = Record<string, Movie>;
 export type WatchedMap = Record<string, { movie: Movie; watchedAt: number }>;
 export type InterestMap = Record<string, { movie: Movie; value: InterestValue; updatedAt: number }>;
@@ -106,10 +111,13 @@ export type RatingPredictionPoint = {
   confidence: number;
   neighborCount: number;
   source: "movielens" | "content" | "baseline";
+  calibrated?: boolean;
 };
 
 export type RatingPrediction = {
   predictedRating: number;
+  rawPredictedRating?: number;
+  calibrated?: boolean;
   confidence: number;
   neighborCount: number;
   source: "movielens" | "content" | "baseline";
@@ -157,7 +165,7 @@ export type PickIntentEvent = {
   watchedAt?: number;
   rating?: number;
 };
-export type LearningEventType = "interest" | "rating" | "watchlist" | "watched" | "pick" | "reviewAspect";
+export type LearningEventType = "interest" | "rating" | "like" | "watchlist" | "watched" | "pick" | "reviewAspect";
 export type LearningEvent = {
   id: string;
   type: LearningEventType;
@@ -192,8 +200,9 @@ export type RecommendationEvent = {
 };
 
 export type CloudUserState = {
-  version?: 2 | 3 | 4;
+  version?: 2 | 3 | 4 | 5;
   ratings: RatingMap;
+  likes?: LikedMap;
   watchlist: WatchlistMap;
   watched: WatchedMap;
   interest: InterestMap;

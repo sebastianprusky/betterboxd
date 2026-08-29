@@ -1,8 +1,9 @@
 import type { CloudUserState, Movie, RecommendationEvent } from "../types";
 
 export const emptyCloudState: CloudUserState = {
-  version: 4,
+  version: 5,
   ratings: {},
+  likes: {},
   watchlist: {},
   watched: {},
   interest: {},
@@ -74,7 +75,9 @@ export function mergeGuestAndAccountState(
   const account = accountInput || emptyCloudState;
   const guest = guestInput;
   const ratings = mergeRecord(account.ratings || {}, guest.ratings || {}, account, guest, "rating");
+  const likes = mergeRecord(account.likes || {}, guest.likes || {}, account, guest, "like");
   const reviews = mergeRecord(account.reviews || {}, guest.reviews || {}, account, guest, "review");
+  const reviewInsights = mergeRecord(account.reviewInsights || {}, guest.reviewInsights || {}, account, guest, "review-insight");
   const interest = mergeRecord(account.interest || {}, guest.interest || {}, account, guest, "interest");
   const watched = mergeRecord(account.watched || {}, guest.watched || {}, account, guest, "watched");
   const watchlist = mergeRecord(account.watchlist || {}, guest.watchlist || {}, account, guest, "watchlist");
@@ -90,8 +93,9 @@ export function mergeGuestAndAccountState(
       : guestImport.lastImportedAt > accountImport.lastImportedAt ? guestImport : accountImport;
 
   return {
-    version: 4,
+    version: 5,
     ratings: ratings.merged,
+    likes: likes.merged,
     reviews: reviews.merged,
     interest: interest.merged,
     watched: watched.merged,
@@ -103,7 +107,7 @@ export function mergeGuestAndAccountState(
       favoriteMovies: unionMovies(account.preferences?.favoriteMovies || {}, guest.preferences?.favoriteMovies || {}),
     },
     recommendationEvents: mergeEvents(account.recommendationEvents || [], guest.recommendationEvents || []),
-    reviewInsights: { ...(account.reviewInsights || {}), ...(guest.reviewInsights || {}) },
+    reviewInsights: reviewInsights.merged,
     reviewAnalysisConsent: guest.reviewAnalysisConsent ?? account.reviewAnalysisConsent ?? false,
     pickIntents: [...(account.pickIntents || []), ...(guest.pickIntents || [])]
       .sort((a, b) => a.createdAt - b.createdAt)
@@ -117,7 +121,9 @@ export function mergeGuestAndAccountState(
       ...(account.fieldUpdatedAt || {}),
       ...(guest.fieldUpdatedAt || {}),
       ...ratings.timestamps,
+      ...likes.timestamps,
       ...reviews.timestamps,
+      ...reviewInsights.timestamps,
       ...interest.timestamps,
       ...watched.timestamps,
       ...watchlist.timestamps,

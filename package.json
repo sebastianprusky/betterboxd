@@ -7,7 +7,7 @@
     "dev": "vite --host 0.0.0.0",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview --host 0.0.0.0",
-    "test": "npm run test:genres && npm run test:merge && npm run test:recommendations && npm run test:prompts && npm run test:candidate-quality && npm run test:outcomes && npm run test:ai-search && npm run test:decision-helper && npm run test:decision-ritual",
+    "test": "npm run test:genres && npm run test:merge && npm run test:recommendations && npm run test:prompts && npm run test:candidate-quality && npm run test:outcomes && npm run test:ai-search && npm run test:decision-helper && npm run test:decision-ritual && npm run test:rating-model && npm run test:letterboxd-fixtures",
     "test:genres": "node --experimental-strip-types scripts/verify-genres.mjs",
     "test:merge": "node --experimental-strip-types scripts/verify-account-merge.mjs",
     "test:recommendations": "node --experimental-strip-types scripts/verify-recommendation-first.mjs",
@@ -17,7 +17,10 @@
     "test:ai-search": "node --experimental-strip-types scripts/verify-ai-search.mjs",
     "test:decision-helper": "node scripts/run-bundled-test.mjs scripts/verify-decision-helper.mjs",
     "test:decision-ritual": "node scripts/run-bundled-test.mjs scripts/verify-decision-ritual.mjs",
-    "benchmark:ai-search": "node scripts/benchmark-ai-search.mjs"
+    "test:rating-model": "node scripts/run-bundled-test.mjs scripts/verify-rating-model.mjs",
+    "test:letterboxd-fixtures": "node scripts/run-bundled-test.mjs scripts/verify-letterboxd-fixtures.mjs",
+    "benchmark:ai-search": "node scripts/benchmark-ai-search.mjs",
+    "benchmark:rating-model": "python3 scripts/benchmark_rating_model.py"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.110.8",

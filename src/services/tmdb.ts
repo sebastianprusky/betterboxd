@@ -37,6 +37,7 @@ const movieDisplayDetailCache = new Map<number, Promise<Movie>>();
 type TmdbMovie = {
   id: number;
   title?: string;
+  original_title?: string;
   name?: string;
   release_date?: string;
   first_air_date?: string;
@@ -89,6 +90,7 @@ type TmdbPersonSearchResult = {
 const mapMovie = (movie: TmdbMovie): Movie => ({
   id: movie.id,
   title: movie.title || movie.name || "Untitled",
+  originalTitle: movie.original_title,
   year: (movie.release_date || movie.first_air_date || "").slice(0, 4) || "Unknown",
   posterPath: movie.poster_path,
   backdropPath: movie.backdrop_path,
@@ -109,6 +111,7 @@ const mapMovieDetail = (movie: TmdbMovieDetail): Movie => {
   return {
     id: movie.id,
     title: movie.title || movie.name || "Untitled",
+    originalTitle: movie.original_title,
     year: (movie.release_date || movie.first_air_date || "").slice(0, 4) || "Unknown",
     posterPath: movie.poster_path,
     backdropPath: movie.backdrop_path,
@@ -393,6 +396,20 @@ export async function getTasteSprintMovies(page: number): Promise<{ movies: Movi
 
 export async function searchMovies(query: string): Promise<Movie[]> {
   return (await searchMoviesWithDebug(query)).movies;
+}
+
+export async function searchMoviesForImport(query: string, year?: string): Promise<Movie[]> {
+  if (!apiKey) return searchMovies(query);
+  const params = new URLSearchParams({ query: query.trim(), include_adult: "false", page: "1" });
+  if (year) params.set("year", year);
+  let data = await tmdbFetch(`/search/movie?${params.toString()}`);
+  if (year && !(data?.results || []).length) {
+    params.delete("year");
+    data = await tmdbFetch(`/search/movie?${params.toString()}`);
+  }
+  return dedupeMovies((data?.results || []).map(mapMovie))
+    .sort((left, right) => (right.popularity || 0) - (left.popularity || 0) || left.title.localeCompare(right.title))
+    .slice(0, 12);
 }
 
 export async function resolveExactMovies(anchors: ReadonlyArray<{ title: string; year: number }>): Promise<Movie[]> {

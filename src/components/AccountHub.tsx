@@ -9,10 +9,12 @@ type Props = {
   theme: Theme;
   syncStatus: string;
   reviewConsent: boolean;
+  includeWatchlist: boolean;
   letterboxdImportMeta: LetterboxdImportMeta | null;
   onOpenChange: (open: boolean) => void;
   onThemeChange: (theme: Theme) => void;
   onReviewConsentChange: (enabled: boolean) => void;
+  onIncludeWatchlistChange: (enabled: boolean) => void;
   onImportLetterboxd: (event: ChangeEvent<HTMLInputElement>) => void;
   onReplayTour: () => void;
   onSignOut: () => Promise<void>;
@@ -51,6 +53,7 @@ export function AccountHub(props: Props) {
         <div className="setting-row account-setting"><div><strong>{props.session ? "Google account" : "Private sync"}</strong><span>{props.session?.user.email || (props.configured ? props.syncStatus : "Google sign-in is unavailable in this build.")}</span></div>{props.session ? <button className="secondary-button" onClick={props.onSignOut}>Sign out</button> : <button className="google-button" onClick={signIn} disabled={!props.configured || busy}><GoogleIcon/>{busy ? "Connecting…" : "Continue with Google"}</button>}</div>
         <div className="setting-row"><div><strong>Letterboxd</strong><span>{props.letterboxdImportMeta ? `Last updated ${new Date(props.letterboxdImportMeta.lastImportedAt).toLocaleDateString()} · ${props.letterboxdImportMeta.ratingCount} ratings` : "Add ratings, watched movies, reviews, and your watchlist."}</span></div><label className="secondary-button file-button"><IconUpload/>{props.letterboxdImportMeta ? "Update Letterboxd" : "Import Letterboxd"}<input type="file" accept=".csv,.zip,text/csv,application/zip" onChange={(event) => { props.onOpenChange(false); props.onImportLetterboxd(event); }} /></label></div>
         <div className="setting-row"><div><strong>Review learning</strong><span>{props.reviewConsent ? "New private reviews can shape recommendations." : "Reviews are saved without analysis."}</span></div><label className="switch-row"><input type="checkbox" checked={props.reviewConsent} onChange={(event) => props.onReviewConsentChange(event.target.checked)} /><span>{props.reviewConsent ? "On" : "Off"}</span></label></div>
+        <div className="setting-row"><div><strong>Watchlist recommendations</strong><span>Allow up to one saved movie in each set of three.</span></div><label className="switch-row"><input type="checkbox" checked={props.includeWatchlist} onChange={(event) => props.onIncludeWatchlistChange(event.target.checked)} /><span>{props.includeWatchlist ? "On" : "Off"}</span></label></div>
         <div className="setting-row"><div><strong>Walkthrough</strong><span>See the three-step introduction again.</span></div><button className="secondary-button" onClick={() => { props.onOpenChange(false); props.onReplayTour(); }}>Replay</button></div>
         {props.session && <div className="danger-zone">{confirmingCloudDelete ? <><p>This removes synced movie activity. Your Google sign-in remains available.</p><button className="secondary-button" onClick={() => setConfirmingCloudDelete(false)}>Cancel</button><button className="danger-button" onClick={async () => { setBusy(true); setMessage(""); try { await props.onDeleteCloudData(); } catch { setMessage("Could not delete synced activity."); } finally { setBusy(false); setConfirmingCloudDelete(false); } }} disabled={busy}>Delete synced activity</button></> : <button className="danger-text" onClick={() => setConfirmingCloudDelete(true)}>Delete synced activity</button>}</div>}
         <div className="danger-zone">{confirmingClear ? <><p>This removes PickAMovie activity from this browser. This cannot be undone.</p><button className="secondary-button" onClick={() => setConfirmingClear(false)}>Cancel</button><button className="danger-button" onClick={props.onClearLocalData}>Clear this device</button></> : <button className="danger-text" onClick={() => setConfirmingClear(true)}>Clear data on this device</button>}</div>

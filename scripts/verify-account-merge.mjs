@@ -7,6 +7,7 @@ const event = (id, movieId, createdAt) => ({ id, type: "open", movieId, movieTit
 const account = {
   version: 2,
   ratings: { "1": 2, "3": 4 },
+  likes: { "1": movie(1, "One") },
   watchlist: { "1": movie(1, "One") },
   watched: {},
   interest: {},
@@ -14,13 +15,14 @@ const account = {
   preferences: { genres: ["Drama"], directors: ["Account Director"], favoriteMovies: {} },
   recommendationEvents: [event("same", 1, 1)],
   letterboxdImportMeta: { lastImportedAt: 10, movieCount: 4, ratingCount: 3 },
-  fieldUpdatedAt: { "rating:1": 10, "rating:3": 30, "review:1": 10, "review:3": 10 },
+  fieldUpdatedAt: { "rating:1": 10, "rating:3": 30, "like:1": 10, "review:1": 10, "review:3": 10 },
   stateUpdatedAt: 30,
 };
 
 const guest = {
   version: 2,
   ratings: { "1": 5, "2": 4, "3": 1 },
+  likes: { "2": movie(2, "Two") },
   watchlist: { "2": movie(2, "Two") },
   watched: { "2": { movie: movie(2, "Two"), watchedAt: 20 } },
   interest: { "2": { movie: movie(2, "Two"), value: "interested", updatedAt: 20 } },
@@ -28,7 +30,7 @@ const guest = {
   preferences: { genres: ["Comedy"], directors: ["Guest Director"], favoriteMovies: { "2": movie(2, "Two") } },
   recommendationEvents: [event("same", 1, 1), event("new", 2, 2)],
   letterboxdImportMeta: { lastImportedAt: 20, movieCount: 8, ratingCount: 7 },
-  fieldUpdatedAt: { "rating:1": 20, "rating:2": 20, "rating:3": 20, "review:1": 20, "review:3": 40, preferences: 20 },
+  fieldUpdatedAt: { "rating:1": 20, "rating:2": 20, "rating:3": 20, "like:2": 20, "review:1": 20, "review:3": 40, preferences: 20 },
   stateUpdatedAt: 40,
 };
 
@@ -36,13 +38,14 @@ const merged = mergeGuestAndAccountState(account, guest);
 assert.equal(merged.ratings["1"], 5, "newer guest rating wins");
 assert.equal(merged.ratings["3"], 4, "newer account rating wins");
 assert.equal(merged.reviews["1"], "newer guest review", "newer review wins");
+assert.deepEqual(Object.keys(merged.likes).sort(), ["1", "2"], "independent likes merge by movie");
 assert.equal("3" in merged.reviews, false, "newer deletion wins");
 assert.deepEqual(Object.keys(merged.watchlist).sort(), ["1", "2"], "collection items are unioned");
 assert.equal(merged.recommendationEvents.length, 2, "event IDs are deduplicated");
 assert.deepEqual(new Set(merged.preferences.genres), new Set(["Drama", "Comedy"]));
 assert.deepEqual(new Set(merged.preferences.directors), new Set(["Account Director", "Guest Director"]));
 assert.equal(merged.preferences.favoriteMovies["2"].title, "Two");
-assert.equal(merged.version, 4, "merged state advances to the current version");
+assert.equal(merged.version, 5, "merged state advances to the current version");
 assert.deepEqual(merged.letterboxdImportMeta, guest.letterboxdImportMeta, "newest import metadata wins");
 
 const retried = mergeGuestAndAccountState(merged, guest);
@@ -56,5 +59,8 @@ assert.equal(mergeGuestAndAccountState(legacyAccount, legacyGuest).ratings["1"],
 const accountDeletion = { ...account, ratings: {}, fieldUpdatedAt: { "rating:3": 50 }, stateUpdatedAt: 50 };
 const staleGuestValue = { ...guest, ratings: { "3": 1 }, fieldUpdatedAt: {}, stateUpdatedAt: 20 };
 assert.equal("3" in mergeGuestAndAccountState(accountDeletion, staleGuestValue).ratings, false, "a newer account deletion is not revived by a legacy guest value");
+
+const likeDeletion = { ...account, likes: {}, fieldUpdatedAt: { "like:1": 50 }, stateUpdatedAt: 50 };
+assert.equal("1" in mergeGuestAndAccountState(likeDeletion, guest).likes, false, "a newer Like deletion remains deleted");
 
 console.log("account merge verification passed");

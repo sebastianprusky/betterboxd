@@ -4,6 +4,7 @@ import { decayingPickWeight, getRatingSignal, isMovieExcluded } from "./recommen
 import { blendPromptRelevance } from "./promptIntent";
 import type {
   InterestMap,
+  LikedMap,
   Movie,
   OnboardingPreferences,
   PickIntentEvent,
@@ -20,6 +21,15 @@ export type RecommendationSignal = { label: string; value: number; detail: strin
 export type RecommendationEvidenceItem = { id: string; category: "request" | "personal" | "discovery"; text: string };
 export type RecommendationResult = { movie: Movie; score: number; reason: string; evidence: string; evidenceItems: RecommendationEvidenceItem[]; signals: RecommendationSignal[]; predictedRating?: RatingPrediction };
 
+export function arrangeWatchlistCandidates<T extends { movie: Movie }>(results: T[], watchlist: WatchlistMap, includeWatchlist: boolean): T[] {
+  const discovery = results.filter((result) => !watchlist[result.movie.id]);
+  if (!includeWatchlist) return discovery;
+  const saved = results.filter((result) => watchlist[result.movie.id]);
+  if (!saved.length) return discovery;
+  const insertion = Math.min(2, discovery.length);
+  return [...discovery.slice(0, insertion), saved[0], ...discovery.slice(insertion)];
+}
+
 const interestWeights = { interested: 0.32, maybe: 0.1, notInterested: -0.8 } as const;
 const movieVectorCache = new Map<number, { profile: string; vector: number[] }>();
 
@@ -28,6 +38,7 @@ export { decayingPickWeight, getRatingSignal } from "./recommendationPolicy";
 export function recommendMovies({
   movies,
   ratings,
+  likes = {},
   watchlist,
   watched = {},
   interest,
@@ -46,6 +57,7 @@ export function recommendMovies({
 }: {
   movies: Movie[];
   ratings: RatingMap;
+  likes?: LikedMap;
   watchlist: WatchlistMap;
   watched?: WatchedMap;
   interest: InterestMap;
@@ -62,11 +74,11 @@ export function recommendMovies({
   excludedIds?: number[];
   limit?: number;
 }): RecommendationResult[] {
-  const userVector = buildUserVector({ movies, ratings, watchlist, interest, preferences, pickIntents, reviewInsights });
+  const userVector = buildUserVector({ movies, ratings, likes, watchlist, interest, preferences, pickIntents, reviewInsights });
   const preferredGenres = new Set(preferences.genres.map(normalize));
   const preferredDirectors = new Set(preferences.directors.map(normalize));
   const preferredActors = new Set((preferences.actors || []).map(normalize));
-  const likedMovies = movies.filter((movie) => (ratings[movie.id] || 0) >= 4 || Boolean(preferences.favoriteMovies[movie.id]) || interest[movie.id]?.value === "interested");
+  const likedMovies = movies.filter((movie) => (ratings[movie.id] || 0) >= 4 || Boolean(likes[movie.id]) || Boolean(preferences.favoriteMovies[movie.id]) || interest[movie.id]?.value === "interested");
   const seenMovieIds = new Set<number>();
   const uniqueMovies = movies.filter((movie) => {
     if (seenMovieIds.has(movie.id)) return false;
@@ -105,7 +117,7 @@ export function recommendMovies({
         { label: "Quality", value: quality, detail: "TMDB audience rating" },
         { label: "Something new", value: novelty, detail: "Balances familiarity with discovery" },
       ]);
-      const explanation = buildRecommendationExplanation({ movie, ratings, watchlist, interest, preferences, promptEvidence: promptEvidence[movie.id], saved, signals, likedMovies });
+      const explanation = buildRecommendationExplanation({ movie, ratings, likes, watchlist, interest, preferences, promptEvidence: promptEvidence[movie.id], saved, signals, likedMovies });
       return { movie, score, signals, reason: explanation.reason, evidence: explanation.evidence, evidenceItems: explanation.evidenceItems, predictedRating: confidentPrediction };
     })
     .sort((a, b) => b.score - a.score);
@@ -113,9 +125,10 @@ export function recommendMovies({
   return diversityRerank(scored, mode, limit, Object.keys(promptScores).length > 0);
 }
 
-function buildUserVector({ movies, ratings, watchlist, interest, preferences, pickIntents, reviewInsights }: {
+function buildUserVector({ movies, ratings, likes, watchlist, interest, preferences, pickIntents, reviewInsights }: {
   movies: Movie[];
   ratings: RatingMap;
+  likes: LikedMap;
   watchlist: WatchlistMap;
   interest: InterestMap;
   preferences: OnboardingPreferences;
@@ -127,6 +140,7 @@ function buildUserVector({ movies, ratings, watchlist, interest, preferences, pi
     const rating = ratings[movie.id];
     if (rating) addWeightedEmbedding(vector, movieVector(movie), getRatingSignal(rating));
   });
+  Object.values(likes).forEach((movie) => addWeightedEmbedding(vector, movieVector(movie), 0.55));
   Object.values(watchlist).forEach((movie) => addWeightedEmbedding(vector, movieVector(movie), 0.12));
   Object.values(interest).forEach(({ movie, value }) => addWeightedEmbedding(vector, movieVector(movie), interestWeights[value]));
   pickIntents.forEach(({ movie, createdAt }) => addWeightedEmbedding(vector, movieVector(movie), decayingPickWeight(createdAt)));
@@ -167,9 +181,10 @@ function tasteDetail(movie: Movie, preferences: OnboardingPreferences) {
   return "Fits the patterns in your ratings and reactions";
 }
 
-function buildRecommendationExplanation({ movie, ratings, watchlist, interest, preferences, promptEvidence, saved, signals, likedMovies }: {
+function buildRecommendationExplanation({ movie, ratings, likes, watchlist, interest, preferences, promptEvidence, saved, signals, likedMovies }: {
   movie: Movie;
   ratings: RatingMap;
+  likes: LikedMap;
   watchlist: WatchlistMap;
   interest: InterestMap;
   preferences: OnboardingPreferences;
@@ -180,7 +195,7 @@ function buildRecommendationExplanation({ movie, ratings, watchlist, interest, p
 }) {
   const promptReason = promptEvidence?.reason?.trim();
   const promptDetail = promptEvidence?.evidence?.trim();
-  const personal = personalEvidence(movie, ratings, watchlist, interest, preferences, likedMovies);
+  const personal = personalEvidence(movie, ratings, likes, watchlist, interest, preferences, likedMovies);
   const baseReason = promptReason || (saved
     ? "You saved this earlier and it is a strong match tonight."
     : personal ? chooseFallbackReason(movie, signals) : generalDiscoveryReason(movie));
@@ -211,12 +226,13 @@ function discoveryEvidence(movie: Movie) {
   return `Chosen as a distinct alternative to the other two movies`;
 }
 
-function personalEvidence(movie: Movie, ratings: RatingMap, watchlist: WatchlistMap, interest: InterestMap, preferences: OnboardingPreferences, likedMovies: Movie[]) {
+function personalEvidence(movie: Movie, ratings: RatingMap, likes: LikedMap, watchlist: WatchlistMap, interest: InterestMap, preferences: OnboardingPreferences, likedMovies: Movie[]) {
   const rating = ratings[movie.id];
   if (rating) return `You rated ${movie.title} ${formatRating(rating)}, which is a direct signal from your history`;
+  if (preferences.favoriteMovies[movie.id]) return `${movie.title} is one of your selected favorite movies`;
+  if (likes[movie.id]) return `You liked ${movie.title}, which is a direct signal from your history`;
   if (watchlist[movie.id]) return `You previously saved ${movie.title}`;
   if (interest[movie.id]?.value === "interested") return `You marked ${movie.title} as interested during Taste Sprint`;
-  if (preferences.favoriteMovies[movie.id]) return `${movie.title} is one of your selected favorite movies`;
   const director = movie.director && preferences.directors.find((value) => normalize(value) === normalize(movie.director || ""));
   if (director) return `${movie.director} is one of your selected directors`;
   const actor = (movie.cast || []).find((name) => preferences.actors.some((value) => normalize(value) === normalize(name)));
@@ -233,6 +249,8 @@ function personalEvidence(movie: Movie, ratings: RatingMap, watchlist: Watchlist
       ? `You rated ${related.candidate.title} ${formatRating(ratings[related.candidate.id])}`
       : preferences.favoriteMovies[related.candidate.id]
         ? `${related.candidate.title} is one of your favorite movies`
+        : likes[related.candidate.id]
+          ? `You liked ${related.candidate.title}`
         : `You marked ${related.candidate.title} as Interested in Taste Sprint`;
     return `${source}, and the two movies share ${shared}`;
   }

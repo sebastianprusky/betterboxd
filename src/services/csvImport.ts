@@ -7,11 +7,15 @@ export type CsvImportRow = {
   rating?: number;
   watched?: boolean;
   saved?: boolean;
+  liked?: boolean;
   review?: string;
   reviewDate?: string;
+  letterboxdUri?: string;
   sources?: string[];
   matchedMovie?: Movie;
   candidates?: Movie[];
+  matchConfidence?: number;
+  matchReason?: string;
   status: "matched" | "ambiguous" | "unmatched" | "searching";
 };
 
@@ -40,37 +44,120 @@ export function parseCsvRecords(text: string) {
 
 export async function resolveMovieCsvRows(
   rows: CsvImportRow[],
-  search: (query: string) => Promise<Movie[]>,
+  search: (query: string, year?: string) => Promise<Movie[]>,
 ): Promise<CsvImportRow[]> {
-  const resolved: CsvImportRow[] = [];
-  for (const row of rows) {
-    if (row.matchedMovie) { resolved.push(row); continue; }
-    try {
-      const searched = (await search(row.title)).slice(0, 8);
-      const exact = searched
-        .filter((movie) => normalized(movie.title) === normalized(row.title))
-        .filter((movie) => !row.year || movie.year === row.year)
-        .slice(0, 6);
-      const candidates = exact.length ? exact : searched.slice(0, 6);
-      resolved.push({
-        ...row,
-        candidates,
-        matchedMovie: exact.length === 1 ? exact[0] : undefined,
-        status: exact.length === 1 ? "matched" : candidates.length ? "ambiguous" : "unmatched",
-      });
-    } catch {
-      resolved.push({ ...row, candidates: [], status: "unmatched" });
+  const resolved = new Array<CsvImportRow>(rows.length);
+  let cursor = 0;
+  const worker = async () => {
+    while (cursor < rows.length) {
+      const index = cursor++;
+      const row = rows[index];
+      if (row.matchedMovie) { resolved[index] = row; continue; }
+      try {
+        let searched: Movie[] = [];
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          try { searched = await search(row.title, row.year); break; }
+          catch (error) { if (attempt === 1) throw error; }
+        }
+        resolved[index] = resolveImportCandidates(row, searched);
+      } catch {
+        resolved[index] = { ...row, candidates: [], status: "unmatched" };
+      }
     }
-  }
+  };
+  await Promise.all(Array.from({ length: Math.min(4, Math.max(1, rows.length)) }, worker));
   return resolved;
+}
+
+export function resolveImportCandidates(row: CsvImportRow, searched: Movie[]): CsvImportRow {
+  const candidates = [...new Map(searched.map((movie) => [movie.id, movie])).values()]
+    .map((movie) => ({ movie, ...importMatchScore(row, movie) }))
+    .sort((left, right) => right.score - left.score || (right.movie.popularity || 0) - (left.movie.popularity || 0) || left.movie.title.localeCompare(right.movie.title))
+    .slice(0, 6);
+  if (!candidates.length) return { ...row, candidates: [], status: "unmatched" };
+  const exactTitle = candidates.filter((candidate) => candidate.exactTitle);
+  const exactYear = exactTitle.filter((candidate) => candidate.yearDifference === 0);
+  const nearbyYear = exactTitle.filter((candidate) => candidate.yearDifference !== null && candidate.yearDifference <= 1);
+  const best = candidates[0];
+  const margin = best.score - (candidates[1]?.score || 0);
+  const isLetterboxd = Boolean(row.letterboxdUri || row.sources?.some((source) => source === "likes/films.csv" || /^(ratings|watched|diary|reviews|watchlist)\.csv$/.test(source)));
+  let matched: typeof best | undefined;
+  let reason = "";
+  if (row.year && exactYear.length) { matched = exactYear[0]; reason = "Matched by exact title and year"; }
+  else if (row.year && !exactYear.length && nearbyYear.length === 1 && exactTitle.length === 1) { matched = nearbyYear[0]; reason = "Matched by title and nearby release year"; }
+  else if (!row.year && exactTitle.length === 1) { matched = exactTitle[0]; reason = "Matched by unique exact title"; }
+  else if (row.year && best.titleScore >= .86 && best.yearDifference === 0 && best.score >= .86 && margin >= .12) { matched = best; reason = "Matched by title similarity and year"; }
+  else if (isLetterboxd && row.year && best.titleScore >= .86 && best.yearDifference !== null && best.yearDifference <= 1) { matched = best; reason = "Automatically matched by title and release year"; }
+  else if (isLetterboxd && !row.year && best.titleScore >= .9) { matched = best; reason = "Automatically matched by title"; }
+  return {
+    ...row,
+    candidates: candidates.map((candidate) => candidate.movie),
+    matchedMovie: matched?.movie,
+    matchConfidence: matched?.score,
+    matchReason: matched ? reason : "Needs review",
+    status: matched ? "matched" : "ambiguous",
+  };
+}
+
+function importMatchScore(row: CsvImportRow, movie: Movie) {
+  const expected = canonicalMovieTitle(row.title);
+  const candidate = canonicalMovieTitle(movie.title);
+  const originalCandidate = movie.originalTitle ? canonicalMovieTitle(movie.originalTitle) : "";
+  const exactTitle = expected === candidate || Boolean(originalCandidate && expected === originalCandidate);
+  const titleScore = exactTitle ? 1 : Math.max(importTitleRelevance(expected, candidate), originalCandidate ? importTitleRelevance(expected, originalCandidate) : 0);
+  const importedYear = Number(row.year);
+  const movieYear = Number(movie.year);
+  const yearDifference = Number.isFinite(importedYear) && Number.isFinite(movieYear) ? Math.abs(importedYear - movieYear) : null;
+  const yearScore = yearDifference === 0 ? 1 : yearDifference === 1 ? .75 : yearDifference === null ? .55 : 0;
+  const popularityScore = Math.min(1, Math.log10(1 + Math.max(0, movie.popularity || 0)) / 2.5);
+  return { exactTitle, titleScore, yearDifference, score: titleScore * .75 + yearScore * .2 + popularityScore * .05 };
 }
 
 export function selectCsvMatch(row: CsvImportRow, movie?: Movie): CsvImportRow {
   return { ...row, matchedMovie: movie, status: movie ? "matched" : row.candidates?.length ? "ambiguous" : "unmatched" };
 }
 
-function normalized(value: string) {
-  return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+export function canonicalMovieTitle(value: string) {
+  const decomposed = value.normalize("NFKD").replace(/[\u0300-\u036f]/g, "").trim().toLowerCase();
+  const article = decomposed.match(/^(.*),\s*(the|an|a)$/);
+  const reordered = article ? `${article[2]} ${article[1]}` : decomposed;
+  return reordered.replace(/&/g, " and ").replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+const importAliases: Record<string, string[]> = {
+  "se7en": ["seven"],
+  "seven": ["se7en"],
+  "et": ["e t", "e t the extra terrestrial", "et the extra terrestrial"],
+  "e t": ["et", "e t the extra terrestrial", "et the extra terrestrial"],
+  "e t the extra terrestrial": ["et", "e t"],
+  "et the extra terrestrial": ["et", "e t"],
+  "wall e": ["walle"],
+  "walle": ["wall e"],
+};
+
+function importTitleRelevance(expected: string, candidate: string) {
+  const expectedForms = new Set([expected, ...(importAliases[expected] || [])]);
+  const candidateForms = new Set([candidate, ...(importAliases[candidate] || [])]);
+  if ([...expectedForms].some((value) => candidateForms.has(value))) return 1;
+  const distance = Math.min(...[...expectedForms].flatMap((left) => [...candidateForms].map((right) => editDistance(left, right))));
+  const length = Math.max(expected.length, candidate.length);
+  if (length >= 4 && distance <= 1) return .9;
+  if (length >= 7 && distance <= 2) return .86;
+  if ([...expectedForms].some((value) => [...candidateForms].some((other) => other.startsWith(value) || value.startsWith(other)))) return .72;
+  return 0;
+}
+
+function editDistance(left: string, right: string) {
+  const previous = Array.from({ length: right.length + 1 }, (_, index) => index);
+  for (let row = 1; row <= left.length; row += 1) {
+    let diagonal = previous[0]; previous[0] = row;
+    for (let column = 1; column <= right.length; column += 1) {
+      const old = previous[column];
+      previous[column] = Math.min(previous[column] + 1, previous[column - 1] + 1, diagonal + (left[row - 1] === right[column - 1] ? 0 : 1));
+      diagonal = old;
+    }
+  }
+  return previous[right.length];
 }
 
 function findColumn(headers: string[], candidates: string[]) {
@@ -92,7 +179,7 @@ export function parseMovieCsv(text: string, catalog: Movie[]): CsvImportRow[] {
     const title = cells[titleIndex]?.trim() || "";
     const year = yearIndex >= 0 ? cells[yearIndex]?.match(/\d{4}/)?.[0] : undefined;
     const matches = catalog.filter((movie) => {
-      const sameTitle = movie.title.trim().toLowerCase() === title.toLowerCase();
+      const sameTitle = canonicalMovieTitle(movie.title) === canonicalMovieTitle(title);
       return sameTitle && (!year || movie.year === year);
     });
     const rawRating = ratingIndex >= 0 ? Number(cells[ratingIndex]) : undefined;
