@@ -325,7 +325,11 @@ async function callOpenAI({ apiKey, instructions, input, schema, schemaName, max
         text: { format: { type: "json_schema", name: schemaName, strict: true, schema } },
       }),
     });
-    if (!response.ok) throw new Error(`OpenAI request failed: ${response.status}`);
+    if (!response.ok) {
+      const details = await response.json().catch(() => null) as { error?: { code?: string; type?: string } } | null;
+      const errorKind = details?.error?.code || details?.error?.type || "unknown_error";
+      throw new Error(`OpenAI request failed (${response.status}, ${errorKind})`);
+    }
     const data = await response.json();
     const text = outputText(data);
     if (!text) throw new Error("OpenAI returned no structured output");
@@ -651,7 +655,8 @@ async function createAiMovieSearch(body: SearchBody, rateLimitKey: string): Prom
       instructions: `Interpret a movie-discovery request for a TMDB-grounded decision engine. Today is ${new Date().toISOString().slice(0, 10)}. This is the only model call, so be compact and precise. Use collection for objective sets, franchises, filmographies, studios, decades, or requests for all/list/every; use curated for subjective recommendations and similarity. Separate explicit objective requirements into hardConstraints. Put tone, themes, pacing, familiarity, and negative degree preferences such as "less gross" into softPreferences unless the user explicitly excludes a concrete genre, person, title, or property. Negative degree preferences must materially affect seed selection: do not seed a movie known to be equally or more graphic, crude, gross, or explicit when the user asks for less of that quality. Identify a referenceMovie for "like" and "similar to" prompts. Return 3-20 canonical theatrical movie seeds with exact release years and one short, title-specific inclusion reason. For collections, include the central released members in canonical relevance order. For vague prompts, choose credible, recognizable examples that genuinely express the requested qualities rather than titles that merely repeat prompt words. Set includeUnreleased only when explicitly requested. Do not invent titles or include television. Do not claim current web facts; TMDB will handle current release and availability data. Return only the schema.`,
       input: `${query}${filterDescription(filters)}`,
     });
-  } catch {
+  } catch (error) {
+    console.error("[ai-movie-search] research failed", error instanceof Error ? error.message : "Unknown OpenAI error");
     return { status: 502, body: { error: "AI research was unavailable" } };
   }
 
