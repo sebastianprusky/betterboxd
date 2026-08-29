@@ -3,6 +3,7 @@ import type { CloudUserState, FriendRequest, Friendship, UserProfile } from "../
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string | undefined;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined;
+const authRedirectUrl = import.meta.env.VITE_AUTH_REDIRECT_URL as string | undefined;
 
 function isValidSupabaseConfig(url: string | undefined, key: string | undefined) {
   if (!url || !key || url.includes("REDACTED") || key.includes("REDACTED")) return false;
@@ -11,7 +12,9 @@ function isValidSupabaseConfig(url: string | undefined, key: string | undefined)
 
 export const isSupabaseConfigured = isValidSupabaseConfig(supabaseUrl, supabaseAnonKey);
 export const supabase = isSupabaseConfigured
-  ? createClient(supabaseUrl as string, supabaseAnonKey as string)
+  ? createClient(supabaseUrl as string, supabaseAnonKey as string, {
+      auth: { flowType: "pkce", detectSessionInUrl: true, persistSession: true, autoRefreshToken: true },
+    })
   : null;
 
 export type AuthSession = Session;
@@ -21,16 +24,23 @@ export async function getCurrentSession() {
   if (!supabase) return null;
   const { data, error } = await supabase.auth.getSession();
   if (error) throw error;
+  if (data.session) cleanAuthCallbackUrl();
   return data.session;
 }
 
 export function subscribeToAuth(callback: (session: Session | null, event: AuthChangeEvent) => void) {
   if (!supabase) return () => undefined;
-  const { data } = supabase.auth.onAuthStateChange((event, session) => callback(session, event));
+  const { data } = supabase.auth.onAuthStateChange((event, session) => {
+    if (session && (event === "SIGNED_IN" || event === "INITIAL_SESSION")) cleanAuthCallbackUrl();
+    callback(session, event);
+  });
   return () => data.subscription.unsubscribe();
 }
 
 function getAuthRedirectUrl() {
+  if (authRedirectUrl) {
+    try { return new URL(authRedirectUrl).origin; } catch { /* fall through to the current origin */ }
+  }
   return typeof window === "undefined" ? undefined : window.location.origin;
 }
 
@@ -46,11 +56,28 @@ export async function signInWithPassword(email: string, password: string) {
 export async function signInWithGoogle() {
   if (!supabase) throw new Error("Supabase is not configured.");
   const redirectTo = getAuthRedirectUrl();
-  const { error } = await supabase.auth.signInWithOAuth({
+  const { data, error } = await supabase.auth.signInWithOAuth({
     provider: "google",
-    options: redirectTo ? { redirectTo } : undefined,
+    options: { ...(redirectTo ? { redirectTo } : {}), skipBrowserRedirect: true },
   });
   if (error) throw error;
+  if (!data.url) throw new Error("Google sign-in did not return a destination. Please try again.");
+  window.location.assign(data.url);
+}
+
+export function hasAuthCallbackParams() {
+  if (typeof window === "undefined") return false;
+  const query = new URLSearchParams(window.location.search);
+  const hash = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+  return query.has("code") || query.has("error") || hash.has("access_token") || hash.has("error");
+}
+
+export function cleanAuthCallbackUrl() {
+  if (typeof window === "undefined" || !hasAuthCallbackParams()) return;
+  const cleaned = new URL(window.location.href);
+  ["code", "error", "error_code", "error_description"].forEach((key) => cleaned.searchParams.delete(key));
+  cleaned.hash = "";
+  window.history.replaceState({}, document.title, `${cleaned.pathname}${cleaned.search}` || "/");
 }
 
 export async function signUpWithPassword(email: string, password: string) {

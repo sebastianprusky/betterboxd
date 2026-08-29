@@ -7,6 +7,8 @@ import type {
   Movie,
   OnboardingPreferences,
   PickIntentEvent,
+  PromptMovieEvidence,
+  RatingPrediction,
   RatingMap,
   RecommendationMode,
   ReviewInsightMap,
@@ -15,7 +17,8 @@ import type {
 } from "../types";
 
 export type RecommendationSignal = { label: string; value: number; detail: string };
-export type RecommendationResult = { movie: Movie; score: number; reason: string; signals: RecommendationSignal[] };
+export type RecommendationEvidenceItem = { id: string; category: "request" | "personal" | "discovery"; text: string };
+export type RecommendationResult = { movie: Movie; score: number; reason: string; evidence: string; evidenceItems: RecommendationEvidenceItem[]; signals: RecommendationSignal[]; predictedRating?: RatingPrediction };
 
 const interestWeights = { interested: 0.32, maybe: 0.1, notInterested: -0.8 } as const;
 const movieVectorCache = new Map<number, { profile: string; vector: number[] }>();
@@ -32,8 +35,11 @@ export function recommendMovies({
   pickIntents = [],
   reviewInsights = {},
   promptScores = {},
+  promptEvidence = {},
   collaborativeScores,
   collaborativeEvidence,
+  candidatePredictions,
+  predictionEnabled = false,
   mode,
   excludedIds = [],
   limit = 18,
@@ -47,8 +53,11 @@ export function recommendMovies({
   pickIntents?: PickIntentEvent[];
   reviewInsights?: ReviewInsightMap;
   promptScores?: Record<number, number>;
+  promptEvidence?: Record<number, PromptMovieEvidence>;
   collaborativeScores?: Map<number, number>;
   collaborativeEvidence?: Map<number, string>;
+  candidatePredictions?: Map<number, RatingPrediction>;
+  predictionEnabled?: boolean;
   mode: RecommendationMode;
   excludedIds?: number[];
   limit?: number;
@@ -57,7 +66,7 @@ export function recommendMovies({
   const preferredGenres = new Set(preferences.genres.map(normalize));
   const preferredDirectors = new Set(preferences.directors.map(normalize));
   const preferredActors = new Set((preferences.actors || []).map(normalize));
-  const likedMovies = movies.filter((movie) => (ratings[movie.id] || 0) >= 4);
+  const likedMovies = movies.filter((movie) => (ratings[movie.id] || 0) >= 4 || Boolean(preferences.favoriteMovies[movie.id]) || interest[movie.id]?.value === "interested");
   const seenMovieIds = new Set<number>();
   const uniqueMovies = movies.filter((movie) => {
     if (seenMovieIds.has(movie.id)) return false;
@@ -85,7 +94,10 @@ export function recommendMovies({
       const baseScore =
         taste * weights.taste + quality * weights.quality + popularity * weights.popularity +
         novelty * weights.novelty + collaborative * weights.collaborative + explicit + (saved ? 0.025 : 0);
-      const score = blendPromptRelevance(baseScore, promptRelevance);
+      const prediction = candidatePredictions?.get(movie.id);
+      const confidentPrediction = predictionEnabled && prediction && prediction.confidence >= .65 ? prediction : undefined;
+      const predictionScore = confidentPrediction ? clamp01((confidentPrediction.predictedRating - .5) / 4.5) : 0;
+      const score = blendPromptRelevance(confidentPrediction ? baseScore * .88 + predictionScore * .12 : baseScore, promptRelevance);
       const signals = normalizeSignals([
         ...(promptRelevance === undefined ? [] : [{ label: "Your request", value: clamp01(promptRelevance), detail: "Directly matches the request you entered" }]),
         { label: "Your taste", value: taste, detail: tasteDetail(movie, preferences) },
@@ -93,7 +105,8 @@ export function recommendMovies({
         { label: "Quality", value: quality, detail: "TMDB audience rating" },
         { label: "Something new", value: novelty, detail: "Balances familiarity with discovery" },
       ]);
-      return { movie, score, signals, reason: chooseReason(movie, signals, saved) };
+      const explanation = buildRecommendationExplanation({ movie, ratings, watchlist, interest, preferences, promptEvidence: promptEvidence[movie.id], saved, signals, likedMovies });
+      return { movie, score, signals, reason: explanation.reason, evidence: explanation.evidence, evidenceItems: explanation.evidenceItems, predictedRating: confidentPrediction };
     })
     .sort((a, b) => b.score - a.score);
 
@@ -154,13 +167,120 @@ function tasteDetail(movie: Movie, preferences: OnboardingPreferences) {
   return "Fits the patterns in your ratings and reactions";
 }
 
-function chooseReason(movie: Movie, signals: RecommendationSignal[], saved: boolean) {
-  if (saved) return "Saved earlier and especially relevant tonight.";
-  const strongest = [...signals].sort((a, b) => b.value - a.value)[0];
-  if (strongest.label === "Audience patterns" || strongest.label === "Movie fit") return strongest.detail + ".";
-  if (strongest.label === "Quality" && (movie.voteAverage || 0) >= 8) return "Highly rated and close to your taste.";
-  return strongest.detail + ".";
+function buildRecommendationExplanation({ movie, ratings, watchlist, interest, preferences, promptEvidence, saved, signals, likedMovies }: {
+  movie: Movie;
+  ratings: RatingMap;
+  watchlist: WatchlistMap;
+  interest: InterestMap;
+  preferences: OnboardingPreferences;
+  promptEvidence?: PromptMovieEvidence;
+  saved: boolean;
+  signals: RecommendationSignal[];
+  likedMovies: Movie[];
+}) {
+  const promptReason = promptEvidence?.reason?.trim();
+  const promptDetail = promptEvidence?.evidence?.trim();
+  const personal = personalEvidence(movie, ratings, watchlist, interest, preferences, likedMovies);
+  const baseReason = promptReason || (saved
+    ? "You saved this earlier and it is a strong match tonight."
+    : personal ? chooseFallbackReason(movie, signals) : generalDiscoveryReason(movie));
+  const reason = sentence(promptReason || (personal ? personalSummary(movie, personal) : saved ? "You saved this for a night like this" : generalDiscoveryReason(movie)));
+  const rawItems: RecommendationEvidenceItem[] = [
+    ...(promptDetail && normalize(promptDetail) !== normalize(reason) ? [{ id: `request:${normalize(promptDetail)}`, category: "request" as const, text: sentence(promptDetail) }] : []),
+    ...(personal && normalize(personal) !== normalize(reason) ? [{ id: `personal:${normalize(personal)}`, category: "personal" as const, text: sentence(personal) }] : []),
+    ...(!promptDetail && !personal ? [{ id: `discovery:${movie.id}`, category: "discovery" as const, text: sentence(discoveryEvidence(movie)) }] : []),
+  ];
+  const evidenceItems = rawItems.filter((item, index, items) => items.findIndex((candidate) => candidate.id === item.id) === index);
+  return { reason, evidence: evidenceItems.map((item) => item.text).join(" ") || sentence(baseReason), evidenceItems };
 }
+
+function personalSummary(movie: Movie, evidence: string) {
+  const relatedMatch = evidence.match(/You (?:rated|marked) ([^,.]+)|([^,.]+) is one of your favorite movies/i);
+  if (relatedMatch) return `${movie.title} connects to ${relatedMatch[1] || relatedMatch[2]} in your taste history`;
+  if (/director/i.test(evidence) && movie.director) return `A ${movie.director} film that matches a preference you chose`;
+  if (/actor/i.test(evidence)) return `A familiar cast match from your saved preferences`;
+  const genreMatch = evidence.match(/selected (.+?) preferences/i);
+  if (genreMatch) return `A direct match for your ${genreMatch[1]} taste`;
+  return `A strong fit for patterns in your ratings and reactions`;
+}
+
+function discoveryEvidence(movie: Movie) {
+  if (movie.director) return `Directed by ${movie.director}, with ${movie.genres.slice(0, 2).join(" and ").toLowerCase() || "a distinctive"} focus`;
+  if ((movie.voteAverage || 0) >= 8 && movie.voteCount) return `Rated ${movie.voteAverage!.toFixed(1)} by TMDB audiences across ${movie.voteCount.toLocaleString()} votes`;
+  if (movie.genres.length) return `Adds ${movie.genres.slice(0, 2).join(" and ").toLowerCase()} range to this three-movie shortlist`;
+  return `Chosen as a distinct alternative to the other two movies`;
+}
+
+function personalEvidence(movie: Movie, ratings: RatingMap, watchlist: WatchlistMap, interest: InterestMap, preferences: OnboardingPreferences, likedMovies: Movie[]) {
+  const rating = ratings[movie.id];
+  if (rating) return `You rated ${movie.title} ${formatRating(rating)}, which is a direct signal from your history`;
+  if (watchlist[movie.id]) return `You previously saved ${movie.title}`;
+  if (interest[movie.id]?.value === "interested") return `You marked ${movie.title} as interested during Taste Sprint`;
+  if (preferences.favoriteMovies[movie.id]) return `${movie.title} is one of your selected favorite movies`;
+  const director = movie.director && preferences.directors.find((value) => normalize(value) === normalize(movie.director || ""));
+  if (director) return `${movie.director} is one of your selected directors`;
+  const actor = (movie.cast || []).find((name) => preferences.actors.some((value) => normalize(value) === normalize(name)));
+  if (actor) return `${actor} is one of your selected actors`;
+  const genres = movie.genres.filter((genre) => preferences.genres.some((value) => normalize(value) === normalize(genre)));
+  if (genres.length) return `It matches your selected ${genres.slice(0, 2).join(" and ")} preferences`;
+  const related = likedMovies
+    .filter((candidate) => candidate.id !== movie.id)
+    .map((candidate) => ({ candidate, overlap: affinityOverlap(movie, candidate) }))
+    .sort((a, b) => b.overlap - a.overlap)[0];
+  if (related && related.overlap >= 2.4) {
+    const shared = sharedTraits(movie, related.candidate);
+    const source = ratings[related.candidate.id]
+      ? `You rated ${related.candidate.title} ${formatRating(ratings[related.candidate.id])}`
+      : preferences.favoriteMovies[related.candidate.id]
+        ? `${related.candidate.title} is one of your favorite movies`
+        : `You marked ${related.candidate.title} as Interested in Taste Sprint`;
+    return `${source}, and the two movies share ${shared}`;
+  }
+  return "";
+}
+
+function sharedTraits(movie: Movie, candidate: Movie) {
+  if (movie.director && candidate.director && normalize(movie.director) === normalize(candidate.director)) return `director ${movie.director}`;
+  const genres = movie.genres.filter((genre) => candidate.genres.some((value) => normalize(value) === normalize(genre)));
+  const keywords = (movie.keywords || []).filter((keyword) => (candidate.keywords || []).some((value) => normalize(value) === normalize(keyword)));
+  const cast = (movie.cast || []).filter((actor) => (candidate.cast || []).some((value) => normalize(value) === normalize(actor)));
+  if (keywords.length) return `${keywords.slice(0, 2).join(" and ")} themes`;
+  if (cast.length) return `${cast[0]} and ${genres.slice(0, 1).join("") || "related movie traits"}`;
+  return genres.slice(0, 2).join(" and ") || "related movie traits";
+}
+
+function chooseFallbackReason(movie: Movie, signals: RecommendationSignal[]) {
+  const strongest = [...signals].sort((a, b) => b.value - a.value)[0];
+  if (strongest.label === "Audience patterns" || strongest.label === "Movie fit") return strongest.detail;
+  if (strongest.label === "Quality" && (movie.voteAverage || 0) >= 8) return "Highly rated and close to your taste";
+  return strongest.detail;
+}
+
+function generalDiscoveryReason(movie: Movie) {
+  if (movie.director) return `${movie.director}'s ${movie.genres[0]?.toLowerCase() || "film"} is the distinctive choice here`;
+  if ((movie.voteAverage || 0) >= 8) {
+    const score = movie.voteAverage!.toFixed(1);
+    const support = movie.voteCount ? ` from ${movie.voteCount.toLocaleString()} TMDB votes` : "";
+    if (movie.id % 3 === 0) return `Strong audience confidence: ${score} on TMDB${support}`;
+    if (movie.id % 3 === 1) return `${movie.year ? `A ${movie.year} release` : "A proven favorite"} that still holds a ${score} audience rating`;
+    return `${movie.genres[0] ? `A high-confidence ${movie.genres[0].toLowerCase()} choice` : "One of the strongest audience choices here"} at ${score} on TMDB`;
+  }
+  if (movie.genres[0]) {
+    const genre = movie.genres[0].toLowerCase();
+    if (movie.id % 3 === 0) return `A clear ${genre} direction for tonight`;
+    if (movie.id % 3 === 1) return `${movie.title} gives the shortlist a ${genre} counterpoint`;
+    return `Chosen to keep tonight's options grounded in ${genre}`;
+  }
+  return `${movie.title} gives this shortlist a different direction`;
+}
+
+function sentence(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`;
+}
+
+function formatRating(value: number) { return `${Number.isInteger(value) ? value.toFixed(0) : value.toFixed(1)} stars`; }
 
 function normalizeSignals(signals: RecommendationSignal[]) {
   const max = Math.max(...signals.map((signal) => signal.value), 0.001);

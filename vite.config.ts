@@ -4,6 +4,7 @@ import { handleCreatorAccountOverviewRequest } from "./api/creator-account-overv
 import { handleSemanticSearchRequest } from "./api/semantic-search";
 import { handleReviewInsightsRequest } from "./api/review-insights";
 import { handleSearchPlanRequest } from "./api/search-plan";
+import { handleAiMovieSearchRequest } from "./api/ai-movie-search";
 
 declare const process: { env: Record<string, string | undefined> };
 
@@ -45,6 +46,8 @@ function semanticSearchApi(): Plugin {
       const env = loadEnv(mode, ".", "");
       [
         "OPENAI_API_KEY",
+        "TMDB_API_KEY",
+        "VITE_TMDB_API_KEY",
         "SUPABASE_URL",
         "SUPABASE_ANON_KEY",
         "SUPABASE_SERVICE_ROLE_KEY",
@@ -52,6 +55,7 @@ function semanticSearchApi(): Plugin {
         "BETTERBOXD_CREATOR_USER_ID",
         "VITE_SUPABASE_URL",
         "VITE_SUPABASE_ANON_KEY",
+        "VITE_AUTH_REDIRECT_URL",
       ].forEach((key) => {
         if (env[key] && !process.env[key]) process.env[key] = env[key];
       });
@@ -76,6 +80,16 @@ function semanticSearchApi(): Plugin {
           body,
         });
         await writeFetchResponse(await handleSearchPlanRequest(fetchRequest), response as NodeResponse);
+      });
+      server.middlewares.use("/api/ai-movie-search", async (request, response) => {
+        const nodeRequest = request as NodeRequest;
+        const body = nodeRequest.method === "POST" ? await readRequestBody(nodeRequest) : undefined;
+        const fetchRequest = new Request(`http://localhost${nodeRequest.url || "/api/ai-movie-search"}`, {
+          method: nodeRequest.method,
+          headers: nodeRequest.headers as HeadersInit,
+          body,
+        });
+        await writeFetchResponse(await handleAiMovieSearchRequest(fetchRequest), response as NodeResponse);
       });
       server.middlewares.use("/api/creator-account-overview", async (request, response) => {
         const nodeRequest = request as NodeRequest;

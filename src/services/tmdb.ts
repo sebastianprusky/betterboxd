@@ -1,6 +1,6 @@
 import { fallbackMovies } from "../data/fallbackMovies";
 import { genreIds, normalizeMovieGenre } from "../data/movieGenres";
-import { isBroadMoviePrompt, personNameRelevance, rankBroadCandidates } from "./candidateQuality";
+import { isBroadMoviePrompt, personNameRelevance, rankBroadCandidates, titleNameRelevance } from "./candidateQuality";
 import type {
   AskPickAMovieResult,
   Movie,
@@ -20,7 +20,11 @@ import {
 import { cosineSimilarity, embedText } from "./localEmbeddings";
 import { buildMovieProfile } from "./movieProfiles";
 import { localSemanticSearchWithDebug, searchMoviesSemantically, type SearchWithDebugResult } from "./semanticSearch";
-import { planMovieSearch, type SearchPlan } from "./searchPlanner";
+import type { SearchPlan } from "./searchPlanner";
+import { searchMoviesWithAi } from "./aiMovieSearch";
+import { matchesPickFilters } from "./pickFilters";
+
+export { matchesPickFilters };
 
 const configuredApiKey = import.meta.env.VITE_TMDB_API_KEY as string | undefined;
 const apiKey = configuredApiKey && configuredApiKey.trim().length >= 20 && !configuredApiKey.includes("REDACTED") ? configuredApiKey.trim() : undefined;
@@ -171,6 +175,8 @@ function titleRelevanceScore(query: string, movie: Movie) {
   const normalizedQuery = normalizeSearchText(query);
   const title = normalizeSearchText(movie.title);
   if (!normalizedQuery || !title) return 0;
+  const intelligentRelevance = titleNameRelevance(query, movie.title);
+  if (intelligentRelevance >= 1) return 22000;
 
   const queryWords = normalizedQuery.split(" ").filter(Boolean);
   const titleWords = title.split(" ").filter(Boolean);
@@ -189,7 +195,7 @@ function titleRelevanceScore(query: string, movie: Movie) {
   const containedWords = queryWords.filter((word) => title.includes(word)).length;
   if (containedWords > 0) return phraseIsShort ? 1600 : 3200;
 
-  return 0;
+  return intelligentRelevance * 10000;
 }
 
 function popularityScore(movie: Movie) {
@@ -371,27 +377,6 @@ export async function discoverPickMovies(filters: PickFilters): Promise<Movie[]>
   return enriched.filter((movie) => matchesPickFilters(movie, filters));
 }
 
-export function matchesPickFilters(movie: Movie, filters: PickFilters) {
-  if (filters.genres.length && !movie.genres.some((genre) => filters.genres.some((selected) => normalizeMovieGenre(selected).toLowerCase() === normalizeMovieGenre(genre).toLowerCase()))) return false;
-  const runtimeConstrained = filters.runtimeMin > 30 || filters.runtimeMax < 300;
-  if (runtimeConstrained && (!movie.runtime || movie.runtime < filters.runtimeMin || movie.runtime > filters.runtimeMax)) return false;
-  const year = Number(movie.year);
-  if (filters.eras.length) {
-    const inSelectedEra = filters.eras.some((era) =>
-      (era === "recent" && year >= 2020) ||
-      (era === "2010s" && year >= 2010 && year <= 2019) ||
-      (era === "2000s" && year >= 2000 && year <= 2009) ||
-      (era === "1990s" && year >= 1990 && year <= 1999) ||
-      (era === "1980s" && year >= 1980 && year <= 1989) ||
-      (era === "1970s" && year >= 1970 && year <= 1979) ||
-      (era === "1960s" && year >= 1960 && year <= 1969) ||
-      (era === "pre1960" && year < 1960)
-    );
-    if (!inSelectedEra) return false;
-  }
-  return true;
-}
-
 export async function getTasteSprintMovies(page: number): Promise<{ movies: Movie[]; hasMore: boolean }> {
   if (!apiKey) return { movies: [], hasMore: false };
 
@@ -410,12 +395,24 @@ export async function searchMovies(query: string): Promise<Movie[]> {
   return (await searchMoviesWithDebug(query)).movies;
 }
 
+export async function resolveExactMovies(anchors: ReadonlyArray<{ title: string; year: number }>): Promise<Movie[]> {
+  if (!apiKey) return [];
+  const settled = await Promise.allSettled(anchors.map(async (anchor) => {
+    const data = await tmdbFetch(`/search/movie?query=${encodeURIComponent(anchor.title)}&year=${anchor.year}&include_adult=false&page=1`);
+    const expected = normalizeSearchText(anchor.title);
+    const match = (data?.results || []).find((movie: TmdbMovie) => normalizeSearchText(movie.title || "") === expected && String(movie.release_date || "").startsWith(String(anchor.year)));
+    return match ? mapMovie(match) : null;
+  }));
+  return settled.flatMap((result) => result.status === "fulfilled" && result.value ? [result.value] : []);
+}
+
 export async function searchPeople(query: string, kind: "actors" | "directors"): Promise<PersonSearchResult[]> {
   if (!apiKey || query.trim().length < 2) return [];
   const trimmedQuery = query.trim();
-  const data = await tmdbFetch(`/search/person?query=${encodeURIComponent(trimmedQuery)}&include_adult=false&page=1`);
+  const pageCount = trimmedQuery.length <= 4 ? 3 : 1;
+  const pages = await Promise.all(Array.from({ length: pageCount }, (_, index) => tmdbFetch(`/search/person?query=${encodeURIComponent(trimmedQuery)}&include_adult=false&page=${index + 1}`)));
   const preferredDepartment = kind === "actors" ? "Acting" : "Directing";
-  const people = (data?.results || [])
+  const people = pages.flatMap((data) => data?.results || [])
     .map((person: TmdbPersonSearchResult) => ({
       id: person.id,
       name: person.name || "Unknown person",
@@ -429,7 +426,11 @@ export async function searchPeople(query: string, kind: "actors" | "directors"):
       popularity: person.popularity || 0,
       nameRelevance: personNameRelevance(trimmedQuery, person.name || ""),
     }))
-    .sort((a: PersonSearchResult & { popularity: number; nameRelevance: number }, b: PersonSearchResult & { popularity: number; nameRelevance: number }) => b.nameRelevance - a.nameRelevance || Number(b.department === preferredDepartment) - Number(a.department === preferredDepartment) || b.popularity - a.popularity)
+    .filter((person, index, items) => items.findIndex((candidate) => candidate.id === person.id) === index)
+    .sort((a: PersonSearchResult & { popularity: number; nameRelevance: number }, b: PersonSearchResult & { popularity: number; nameRelevance: number }) => {
+      const score = (person: PersonSearchResult & { popularity: number; nameRelevance: number }) => person.nameRelevance * .62 + Number(person.department === preferredDepartment) * .12 + Math.min(1, Math.log10(person.popularity + 1) / 2.5) * .21 + Math.min(1, person.knownFor.length / 3) * .05;
+      return score(b) - score(a) || b.popularity - a.popularity || a.name.localeCompare(b.name);
+    })
     .slice(0, 10);
   if (kind === "actors") {
     return people
@@ -755,12 +756,21 @@ function explainAskIntent(intent: AskIntent, semanticMode: "remote" | "local" | 
   return `I understood: ${understood}. Results use metadata filtering.`;
 }
 
-export async function askPickAMovie(query: string): Promise<AskPickAMovieResult> {
+function fallbackSearchPlan(): SearchPlan | null { return null; }
+
+export async function askPickAMovie(query: string, filters?: PickFilters): Promise<AskPickAMovieResult> {
   const trimmed = query.trim();
   if (!trimmed) return { movies: [], debug: {}, filters: [], promptScores: {}, serviceStatus: "metadata-only", explanation: "Ask for a genre, era, franchise, or other movie request.", resultMode: "curated" };
 
+  try {
+    const aiResult = await searchMoviesWithAi(trimmed, filters);
+    if (aiResult.movies.length) return aiResult;
+  } catch { /* The existing TMDB and semantic pipeline is the disclosed fallback. */ }
+
   const parsedIntent = parseAskIntent(trimmed);
-  const plan = await planMovieSearch(trimmed);
+  // A failed Luna request falls back directly to TMDB/local retrieval. Do not
+  // spend a second model call trying to recreate the same interpretation.
+  const plan = fallbackSearchPlan();
   const intent = intentWithPlan(parsedIntent, plan);
   const broadQuery = isBroadMoviePrompt(trimmed, {
     referenceTitle: intent.referenceTitle,
@@ -828,9 +838,10 @@ export async function askPickAMovie(query: string): Promise<AskPickAMovieResult>
       filters: intent.filters,
       promptScores: qualityRanked.promptScores,
       serviceStatus: !apiKey ? "local-fallback" : semanticMode === "remote" ? "full" : "metadata-only",
-      explanation: plan?.interpretation || explainAskIntent(intent, semanticMode, anchored.resolvedReferenceTitle),
+      explanation: `AI research was unavailable—using TMDB matching. ${plan?.interpretation || explainAskIntent(intent, semanticMode, anchored.resolvedReferenceTitle)}`,
       resultMode: plan?.resultMode || "curated",
       broadQuery,
+      verificationStatus: "fallback",
     };
   } catch {
     const candidates = filterFallbackMovies(intent);
@@ -847,10 +858,11 @@ export async function askPickAMovie(query: string): Promise<AskPickAMovieResult>
       promptScores: Object.fromEntries(ranked.movies.map((movie, index) => [movie.id, Math.max(0.35, 0.75 - index * 0.025)])),
       serviceStatus: "local-fallback",
       explanation: intent.referenceTitle
-        ? `I recognized “similar to ${intent.referenceTitle},” but richer reference search was unavailable. These are limited local-catalog matches.`
-        : "I used local movie data because the richer search path was unavailable.",
+        ? `AI research was unavailable—using local matching. I recognized “similar to ${intent.referenceTitle},” but richer reference search was unavailable.`
+        : "AI research was unavailable—using local movie matching.",
       resultMode: plan?.resultMode || "curated",
       broadQuery: false,
+      verificationStatus: "fallback",
     };
   }
 }

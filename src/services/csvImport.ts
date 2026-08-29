@@ -6,13 +6,16 @@ export type CsvImportRow = {
   year?: string;
   rating?: number;
   watched?: boolean;
+  saved?: boolean;
   review?: string;
+  reviewDate?: string;
+  sources?: string[];
   matchedMovie?: Movie;
   candidates?: Movie[];
   status: "matched" | "ambiguous" | "unmatched" | "searching";
 };
 
-function parseCsvRecords(text: string) {
+export function parseCsvRecords(text: string) {
   const records: string[][] = [];
   let record: string[] = [];
   let cell = "";
@@ -83,6 +86,7 @@ export function parseMovieCsv(text: string, catalog: Movie[]): CsvImportRow[] {
   const ratingIndex = findColumn(headers, ["rating", "stars", "score"]);
   const watchedIndex = findColumn(headers, ["watched", "watchedstatus", "seen"]);
   const reviewIndex = findColumn(headers, ["review", "notes", "comment"]);
+  const savedIndex = findColumn(headers, ["saved", "watchlist", "watchlisted"]);
   if (titleIndex < 0) return [];
   return records.slice(1).map((cells, index) => {
     const title = cells[titleIndex]?.trim() || "";
@@ -94,13 +98,16 @@ export function parseMovieCsv(text: string, catalog: Movie[]): CsvImportRow[] {
     const rawRating = ratingIndex >= 0 ? Number(cells[ratingIndex]) : undefined;
     const rating = rawRating && rawRating > 0 ? Math.min(5, rawRating > 5 ? rawRating / 2 : rawRating) : undefined;
     const watchedValue = watchedIndex >= 0 ? cells[watchedIndex]?.toLowerCase() : "";
+    const savedValue = savedIndex >= 0 ? cells[savedIndex]?.toLowerCase() : "";
     return {
       row: index + 2,
       title,
       year,
       rating,
       watched: Boolean(rating || ["yes", "true", "watched", "1"].includes(watchedValue)),
+      saved: ["yes", "true", "saved", "watchlist", "1"].includes(savedValue),
       review: reviewIndex >= 0 ? cells[reviewIndex]?.trim() : undefined,
+      sources: ["CSV"],
       matchedMovie: matches.length === 1 ? matches[0] : undefined,
       status: matches.length === 1 ? "matched" : matches.length > 1 ? "ambiguous" : "unmatched",
     } satisfies CsvImportRow;

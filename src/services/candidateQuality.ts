@@ -78,7 +78,47 @@ export function personNameRelevance(query: string, name: string) {
   const expected = normalize(query);
   const candidate = normalize(name);
   if (!expected || !candidate) return 0;
-  if (candidate === expected) return 4;
-  if (candidate.split(" ").some((part) => part.startsWith(expected))) return 3;
-  return candidate.includes(expected) ? 1 : 0;
+  if (candidate === expected) return 1;
+  if (candidate.split(" ").some((part) => part.startsWith(expected))) return .86;
+  if (candidate.includes(expected)) return .62;
+  const distance = damerauLevenshtein(expected, candidate.split(" ")[0] || candidate);
+  return expected.length >= 3 && distance <= 1 ? .48 : 0;
+}
+
+const titleAliases: Record<string, string[]> = {
+  "se7en": ["seven"],
+  "seven": ["se7en"],
+  "et the extra terrestrial": ["et", "e t"],
+  "e t the extra terrestrial": ["et", "et the extra terrestrial"],
+  "et": ["et the extra terrestrial", "e t"],
+  "wall e": ["walle"],
+  "walle": ["wall e"],
+  "m i": ["mission impossible"],
+};
+
+export function titleNameRelevance(query: string, title: string) {
+  const normalize = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  const expected = normalize(query);
+  const candidate = normalize(title);
+  if (!expected || !candidate) return 0;
+  const candidateForms = new Set([candidate, ...(titleAliases[candidate] || []).map(normalize)]);
+  const queryForms = new Set([expected, ...(titleAliases[expected] || []).map(normalize)]);
+  if ([...queryForms].some((form) => candidateForms.has(form))) return 1;
+  if ([...queryForms].some((form) => [...candidateForms].some((candidateForm) => candidateForm.startsWith(form)))) return .86;
+  if ([...queryForms].some((form) => [...candidateForms].some((candidateForm) => candidateForm.split(" ").includes(form)))) return .78;
+  const bestDistance = Math.min(...[...queryForms].flatMap((form) => [...candidateForms].map((candidateForm) => damerauLevenshtein(form, candidateForm))));
+  const length = Math.max(expected.length, candidate.length);
+  if (length >= 4 && bestDistance <= 1) return .7;
+  if (length >= 7 && bestDistance <= 2) return .52;
+  return candidate.includes(expected) ? .45 : 0;
+}
+
+function damerauLevenshtein(a: string, b: string) {
+  const matrix = Array.from({ length: a.length + 1 }, (_, row) => Array.from({ length: b.length + 1 }, (_, column) => row === 0 ? column : column === 0 ? row : 0));
+  for (let row = 1; row <= a.length; row += 1) for (let column = 1; column <= b.length; column += 1) {
+    const cost = a[row - 1] === b[column - 1] ? 0 : 1;
+    matrix[row][column] = Math.min(matrix[row - 1][column] + 1, matrix[row][column - 1] + 1, matrix[row - 1][column - 1] + cost);
+    if (row > 1 && column > 1 && a[row - 1] === b[column - 2] && a[row - 2] === b[column - 1]) matrix[row][column] = Math.min(matrix[row][column], matrix[row - 2][column - 2] + cost);
+  }
+  return matrix[a.length][b.length];
 }

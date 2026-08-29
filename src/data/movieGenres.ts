@@ -1,4 +1,4 @@
-export const movieGenres = [
+const allMovieGenres = [
   { id: 28, name: "Action", label: "Action" },
   { id: 12, name: "Adventure", label: "Adventure" },
   { id: 16, name: "Animation", label: "Animation" },
@@ -20,8 +20,13 @@ export const movieGenres = [
   { id: 37, name: "Western", label: "Western" },
 ] as const;
 
+export const movieGenres = allMovieGenres.filter((genre) => genre.name !== "TV Movie");
+
 export const genreOptions: ReadonlyArray<readonly [string, string]> = movieGenres.map((genre) => [genre.name, genre.label] as const);
-export const genreIds: Record<number, string> = Object.fromEntries(movieGenres.map((genre) => [genre.id, genre.name]));
+// Keep the complete TMDB mapping so existing cached movies remain readable even
+// when a provider classifies them as TV movies. TV Movie is intentionally not a
+// user-facing filter or preference.
+export const genreIds: Record<number, string> = Object.fromEntries(allMovieGenres.map((genre) => [genre.id, genre.name]));
 
 export function normalizeMovieGenre(name: string) {
   return name.trim().toLowerCase() === "science fiction" ? "Sci-Fi" : name.trim();

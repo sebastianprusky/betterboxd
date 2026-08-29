@@ -60,6 +60,7 @@ To enable account sync, create a free Supabase project, run [supabase/schema.sql
 ```bash
 VITE_SUPABASE_URL=your_supabase_project_url_here
 VITE_SUPABASE_ANON_KEY=your_supabase_anon_key_here
+VITE_AUTH_REDIRECT_URL=https://your_deployed_app_here
 ```
 
 Without Supabase env vars, the app remains fully usable as a local guest. Do not claim account sync or social access is live until the schema, RLS policies, auth redirect URLs, and end-to-end flows have been verified against the intended project.

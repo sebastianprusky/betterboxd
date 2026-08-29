@@ -2,7 +2,7 @@ export type Tab = "pick" | "taste" | "library";
 export type Theme = "light" | "dark";
 export type InterestValue = "interested" | "maybe" | "notInterested";
 export type RecommendationMode = "focused" | "balanced" | "exploratory";
-export type LibraryFilter = "all" | "watched" | "watchlist" | "rated" | "rejected";
+export type LibraryFilter = "watched" | "watchlist" | "rated";
 
 export type Movie = {
   id: number;
@@ -63,15 +63,25 @@ export type MovieDebugInfo = {
 };
 export type MovieDebugMap = Record<number, MovieDebugInfo>;
 export type AskFilter = { label: string; value: string };
+export type PromptMovieEvidence = {
+  reason: string;
+  evidence: string;
+  matchedConstraints: string[];
+  fitScore: number;
+  confidence: number;
+};
 export type AskPickAMovieResult = {
   movies: Movie[];
   debug: MovieDebugMap;
   filters: AskFilter[];
   promptScores: Record<number, number>;
+  promptEvidence?: Record<number, PromptMovieEvidence>;
   serviceStatus: "full" | "metadata-only" | "local-fallback";
   explanation: string;
   resultMode: "curated" | "collection";
   broadQuery?: boolean;
+  verificationStatus?: "verified" | "deterministic" | "fallback";
+  usedWebSearch?: boolean;
 };
 
 export type RatingMap = Record<string, number>;
@@ -79,6 +89,48 @@ export type WatchlistMap = Record<string, Movie>;
 export type WatchedMap = Record<string, { movie: Movie; watchedAt: number }>;
 export type InterestMap = Record<string, { movie: Movie; value: InterestValue; updatedAt: number }>;
 export type ReviewMap = Record<string, string>;
+
+export type LetterboxdImportMeta = {
+  lastImportedAt: number;
+  movieCount: number;
+  ratingCount: number;
+};
+
+export type RatingPredictionPoint = {
+  movie: Movie;
+  predictedRating: number;
+  actualRating: number;
+  absoluteError: number;
+  x: number;
+  y: number;
+  confidence: number;
+  neighborCount: number;
+  source: "movielens" | "content" | "baseline";
+};
+
+export type RatingPrediction = {
+  predictedRating: number;
+  confidence: number;
+  neighborCount: number;
+  source: "movielens" | "content" | "baseline";
+};
+
+export type TasteSignal = {
+  id: string;
+  label: string;
+  category: "Genre" | "Era" | "Director" | "Actor" | "Theme" | "Language" | "Review";
+  weight: number;
+  evidence: number;
+};
+
+export type TasteStrength = {
+  score: number;
+  signalScore: number;
+  coverageScore: number;
+  modelCoverageScore: number;
+  outcomeScore: number;
+  nextStep: string;
+};
 
 export type ReviewAspect = {
   id: string;
@@ -119,6 +171,7 @@ export type LearningEvent = {
 export type RecommendationEventType =
   | "impression"
   | "open"
+  | "swap"
   | "watchlist"
   | "highRating"
   | "rating"
@@ -139,7 +192,7 @@ export type RecommendationEvent = {
 };
 
 export type CloudUserState = {
-  version?: 2 | 3;
+  version?: 2 | 3 | 4;
   ratings: RatingMap;
   watchlist: WatchlistMap;
   watched: WatchedMap;
@@ -152,6 +205,7 @@ export type CloudUserState = {
   pickIntents?: PickIntentEvent[];
   learningEvents?: LearningEvent[];
   tasteSprintDecisions?: number;
+  letterboxdImportMeta?: LetterboxdImportMeta;
   fieldUpdatedAt?: Record<string, number>;
   stateUpdatedAt?: number;
 };

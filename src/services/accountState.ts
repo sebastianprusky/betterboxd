@@ -1,7 +1,7 @@
 import type { CloudUserState, Movie, RecommendationEvent } from "../types";
 
 export const emptyCloudState: CloudUserState = {
-  version: 3,
+  version: 4,
   ratings: {},
   watchlist: {},
   watched: {},
@@ -81,9 +81,16 @@ export function mergeGuestAndAccountState(
   const preferenceTimeAccount = updatedAt(account, "preferences", 0);
   const preferenceTimeGuest = updatedAt(guest, "preferences", 0);
   const stateUpdatedAt = Math.max(account.stateUpdatedAt || 0, guest.stateUpdatedAt || 0, Date.now());
+  const accountImport = account.letterboxdImportMeta;
+  const guestImport = guest.letterboxdImportMeta;
+  const letterboxdImportMeta = !accountImport
+    ? guestImport
+    : !guestImport
+      ? accountImport
+      : guestImport.lastImportedAt > accountImport.lastImportedAt ? guestImport : accountImport;
 
   return {
-    version: 3,
+    version: 4,
     ratings: ratings.merged,
     reviews: reviews.merged,
     interest: interest.merged,
@@ -105,6 +112,7 @@ export function mergeGuestAndAccountState(
       .sort((a, b) => a.createdAt - b.createdAt)
       .slice(-100),
     tasteSprintDecisions: Math.max(account.tasteSprintDecisions || 0, guest.tasteSprintDecisions || 0),
+    letterboxdImportMeta,
     fieldUpdatedAt: {
       ...(account.fieldUpdatedAt || {}),
       ...(guest.fieldUpdatedAt || {}),

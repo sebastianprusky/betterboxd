@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { isBroadMoviePrompt, personNameRelevance, rankBroadCandidates } from "../src/services/candidateQuality.ts";
+import { isBroadMoviePrompt, personNameRelevance, rankBroadCandidates, titleNameRelevance } from "../src/services/candidateQuality.ts";
 import { parseAskIntent } from "../src/services/promptIntent.ts";
 
 const movie = (id, title, { popularity, voteCount, voteAverage }) => ({
@@ -26,5 +26,9 @@ assert.ok(ranked.movies.slice(0, 3).every((candidate) => candidate.voteCount >= 
 
 assert.ok(personNameRelevance("Greta Gerwig", "Greta Gerwig") > personNameRelevance("Greta Gerwig", "Greta Gerwig-Smith"));
 assert.equal(personNameRelevance("jordan", "Jordan Peele"), personNameRelevance("jordan", "Michael B. Jordan"), "ambiguous token matches should let popularity decide");
+assert.ok(titleNameRelevance("et", "E.T. the Extra-Terrestrial") > titleNameRelevance("et", "Et Tu"), "curated aliases understand punctuation-free canonical titles");
+assert.ok(titleNameRelevance("seven", "Se7en") > titleNameRelevance("seven", "The Seventh Day"), "curated aliases understand stylized titles");
+assert.ok(titleNameRelevance("parasiet", "Parasite") > 0, "small transpositions receive deterministic fuzzy credit");
+assert.ok(personNameRelevance("syd", "Sydney Sweeney") > personNameRelevance("syd", "Rosy de Palma"), "short prefixes outrank incidental fuzzy matches before popularity and known-work evidence");
 
 console.log("Candidate quality checks passed.");
