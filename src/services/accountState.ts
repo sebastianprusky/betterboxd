@@ -1,5 +1,11 @@
 import type { CloudUserState, Movie, RecommendationEvent } from "../types";
 
+export function excludeWatchedFromWatchlist<T>(watchlist: Record<string, T>, watched: Record<string, unknown>) {
+  const next = { ...watchlist };
+  Object.keys(watched).forEach((movieId) => { delete next[movieId]; });
+  return next;
+}
+
 export const emptyCloudState: CloudUserState = {
   version: 5,
   ratings: {},
@@ -81,9 +87,14 @@ export function mergeGuestAndAccountState(
   const interest = mergeRecord(account.interest || {}, guest.interest || {}, account, guest, "interest");
   const watched = mergeRecord(account.watched || {}, guest.watched || {}, account, guest, "watched");
   const watchlist = mergeRecord(account.watchlist || {}, guest.watchlist || {}, account, guest, "watchlist");
+  const stateUpdatedAt = Math.max(account.stateUpdatedAt || 0, guest.stateUpdatedAt || 0, Date.now());
+  const watchedIdsInWatchlist = Object.keys(watchlist.merged).filter((movieId) => movieId in watched.merged);
+  const sanitizedWatchlist = excludeWatchedFromWatchlist(watchlist.merged, watched.merged);
+  watchedIdsInWatchlist.forEach((movieId) => {
+    watchlist.timestamps[`watchlist:${movieId}`] = Math.max(watchlist.timestamps[`watchlist:${movieId}`] || 0, watched.timestamps[`watched:${movieId}`] || 0, stateUpdatedAt);
+  });
   const preferenceTimeAccount = updatedAt(account, "preferences", 0);
   const preferenceTimeGuest = updatedAt(guest, "preferences", 0);
-  const stateUpdatedAt = Math.max(account.stateUpdatedAt || 0, guest.stateUpdatedAt || 0, Date.now());
   const accountImport = account.letterboxdImportMeta;
   const guestImport = guest.letterboxdImportMeta;
   const letterboxdImportMeta = !accountImport
@@ -99,7 +110,7 @@ export function mergeGuestAndAccountState(
     reviews: reviews.merged,
     interest: interest.merged,
     watched: watched.merged,
-    watchlist: watchlist.merged,
+    watchlist: sanitizedWatchlist,
     preferences: {
       genres: [...new Set([...(account.preferences?.genres || []), ...(guest.preferences?.genres || [])])],
       directors: [...new Set([...(account.preferences?.directors || []), ...(guest.preferences?.directors || [])])],

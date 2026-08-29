@@ -14,7 +14,7 @@ export function filterAndSortLibraryMovies({ movies, filter, watchedFilter, sort
   const normalizedQuery = query.trim().toLowerCase();
   return movies.filter((movie) => {
     if (filter === "watched" && !watched[movie.id]) return false;
-    if (filter === "watchlist" && !watchlist[movie.id]) return false;
+    if (filter === "watchlist" && (!watchlist[movie.id] || watched[movie.id])) return false;
     if (filter === "watched" && watchedFilter === "liked" && !likes[movie.id]) return false;
     return !normalizedQuery || `${movie.title} ${movie.year}`.toLowerCase().includes(normalizedQuery);
   }).sort((a, b) => {

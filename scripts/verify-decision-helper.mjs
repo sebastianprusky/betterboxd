@@ -36,6 +36,7 @@ assert.equal(firstMerge.ratings[1], 4.5, "a changed imported rating updates the 
 assert.equal(firstMerge.ratings[99], 5, "movies omitted from a later import remain untouched");
 assert.equal(firstMerge.reviews[99], "Keep this", "existing reviews absent from the import remain untouched");
 assert.ok(firstMerge.watchlist[99], "existing watchlist entries absent from the import remain untouched");
+assert.equal(firstMerge.watchlist[3], undefined, "a movie imported as watched is removed from the watchlist");
 assert.ok(firstMerge.likes[2], "liked films import into the distinct Likes map");
 assert.ok(firstMerge.likes[99], "re-import omissions never remove existing local Likes");
 assert.ok(firstMerge.touched.includes("like:2"), "Like imports participate in field-update syncing");
@@ -79,6 +80,7 @@ assert.deepEqual(filterAndSortLibraryMovies({ ...libraryBase, sort: "title" }).m
 assert.deepEqual(filterAndSortLibraryMovies({ ...libraryBase, sort: "year-newest" }).map((item) => item.id), [402, 403, 401]);
 assert.deepEqual(filterAndSortLibraryMovies({ ...libraryBase, sort: "recent", watchedFilter: "liked" }).map((item) => item.id), [403]);
 assert.deepEqual(filterAndSortLibraryMovies({ ...libraryBase, sort: "recent", query: "alp" }).map((item) => item.id), [402]);
+assert.deepEqual(filterAndSortLibraryMovies({ ...libraryBase, filter: "watchlist", sort: "recent", watchlist: { 401: libraryMovies[0], 402: libraryMovies[1] } }).map((item) => item.id), [], "watched movies never render in the watchlist tab even during reconciliation");
 
 const outcomeMovie = movie(301, "Outcome", 2024);
 const unwatched = removeWatchedOutcome({

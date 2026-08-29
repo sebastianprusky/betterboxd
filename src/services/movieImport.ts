@@ -1,4 +1,5 @@
 import type { LikedMap, Movie, RatingMap, ReviewMap, WatchedMap, WatchlistMap } from "../types";
+import { excludeWatchedFromWatchlist } from "./accountState";
 import { canonicalMovieTitle, parseCsvRecords, parseMovieCsv, type CsvImportRow } from "./csvImport";
 
 const MAX_COMPRESSED_BYTES = 50 * 1024 * 1024;
@@ -23,13 +24,13 @@ export function mergeImportedRows(rows: CsvImportRow[], current: { ratings: Rati
   rows.forEach((row) => {
     const movie = row.matchedMovie;
     if (!movie) return;
-    if (row.watched || row.rating) { watched[movie.id] ||= { movie, watchedAt: now }; touched.push(`watched:${movie.id}`); }
+    if (row.watched || row.rating) { watched[movie.id] ||= { movie, watchedAt: now }; touched.push(`watched:${movie.id}`, `watchlist:${movie.id}`); delete watchlist[movie.id]; }
     if (row.rating !== undefined) { ratings[movie.id] = row.rating; touched.push(`rating:${movie.id}`); }
     if (row.liked) { likes[movie.id] = movie; touched.push(`like:${movie.id}`); }
     if (row.review) { reviews[movie.id] = row.review; touched.push(`review:${movie.id}`); }
-    if (row.saved) { watchlist[movie.id] = movie; touched.push(`watchlist:${movie.id}`); }
+    if (row.saved && !watched[movie.id]) { watchlist[movie.id] = movie; touched.push(`watchlist:${movie.id}`); }
   });
-  return { ratings, likes, reviews, watched, watchlist, touched };
+  return { ratings, likes, reviews, watched, watchlist: excludeWatchedFromWatchlist(watchlist, watched), touched };
 }
 
 export async function parseMovieImportFile(file: File, catalog: Movie[]): Promise<{ rows: CsvImportRow[]; summary: MovieImportSummary }> {

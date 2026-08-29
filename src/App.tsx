@@ -3,7 +3,7 @@ import { flushSync } from "react-dom";
 import { AccountHub } from "./components/AccountHub";
 import { fallbackMovies } from "./data/fallbackMovies";
 import { genreOptions } from "./data/movieGenres";
-import { emptyCloudState, createMergeKey, mergeGuestAndAccountState } from "./services/accountState";
+import { emptyCloudState, createMergeKey, excludeWatchedFromWatchlist, mergeGuestAndAccountState } from "./services/accountState";
 import { resolveMovieCsvRows, selectCsvMatch, type CsvImportRow } from "./services/csvImport";
 import { mergeImportedRows, parseMovieImportFile, type MovieImportSummary } from "./services/movieImport";
 import { filterAndSortLibraryMovies } from "./services/library";
@@ -311,6 +311,14 @@ export default function App() {
   useEffect(() => writeJson(storage.likes, likes), [likes]);
   useEffect(() => writeJson(storage.watchlist, watchlist), [watchlist]);
   useEffect(() => writeJson(storage.watched, watched), [watched]);
+  useEffect(() => {
+    const overlaps = Object.keys(watchlist).filter((movieId) => movieId in watched);
+    if (!overlaps.length) return;
+    const now = Date.now();
+    setWatchlist((current) => excludeWatchedFromWatchlist(current, watched));
+    setFieldUpdatedAt((current) => ({ ...current, ...Object.fromEntries(overlaps.map((movieId) => [`watchlist:${movieId}`, now])) }));
+    setStateUpdatedAt(now);
+  }, [watched, watchlist]);
   useEffect(() => writeJson(storage.interest, interest), [interest]);
   useEffect(() => writeJson(storage.reviews, reviews), [reviews]);
   useEffect(() => writeJson(storage.reviewInsights, reviewInsights), [reviewInsights]);
@@ -588,7 +596,8 @@ export default function App() {
   }, [cloudState, session?.user.id]);
 
   function applyState(state: CloudUserState) {
-    setRatings(state.ratings || {}); setLikes(state.likes || {}); setWatchlist(state.watchlist || {}); setWatched(state.watched || {}); setInterest(state.interest || {});
+    const nextWatched = state.watched || {};
+    setRatings(state.ratings || {}); setLikes(state.likes || {}); setWatchlist(excludeWatchedFromWatchlist(state.watchlist || {}, nextWatched)); setWatched(nextWatched); setInterest(state.interest || {});
     setReviews(state.reviews || {}); setReviewInsights(state.reviewInsights || {}); setReviewConsent(state.reviewAnalysisConsent || false);
     setPreferences({ ...defaultPreferences, ...(state.preferences || {}) }); setPickIntents(state.pickIntents || []); setLearningEvents(state.learningEvents || []);
     setTasteDecisions(state.tasteSprintDecisions || 0); setLetterboxdImportMeta(state.letterboxdImportMeta || null); setFieldUpdatedAt(state.fieldUpdatedAt || {}); setStateUpdatedAt(state.stateUpdatedAt || Date.now());
@@ -720,7 +729,7 @@ export default function App() {
   }
 
   function rateMovie(movie: Movie, rating: number | null) {
-    touch(`rating:${movie.id}`, `watched:${movie.id}`);
+    touch(`rating:${movie.id}`, `watched:${movie.id}`, `watchlist:${movie.id}`);
     if (rating === null) {
       setRatings((current) => { const next = { ...current }; delete next[movie.id]; return next; });
       setLearningEvents((current) => current.filter((event) => !(event.type === "rating" && event.movie.id === movie.id)));
@@ -731,6 +740,7 @@ export default function App() {
     const originatingPick = [...pickIntents].reverse().find((item) => item.movie.id === movie.id);
     setRatings((current) => ({ ...current, [movie.id]: rating }));
     setWatched((current) => ({ ...current, [movie.id]: current[movie.id] || { movie, watchedAt: Date.now() } }));
+    setWatchlist((current) => { const next = { ...current }; delete next[movie.id]; return next; });
     setLearningEvents((current) => current.filter((event) => !(event.type === "rating" && event.movie.id === movie.id)));
     learn("rating", movie, `Rated ${formatRating(rating)} out of 5`, `rating:${movie.id}`);
     if (originatingPick) {
@@ -741,7 +751,7 @@ export default function App() {
   }
 
   function saveMovie(movie: Movie, replace = true) {
-    if (watchlist[movie.id]) return;
+    if (watched[movie.id] || watchlist[movie.id]) return;
     touch(`watchlist:${movie.id}`); setWatchlist((current) => ({ ...current, [movie.id]: movie }));
     learn("watchlist", movie, "Saved to watchlist", `watchlist:${movie.id}`); if (replace) replacePick(movie.id);
   }
