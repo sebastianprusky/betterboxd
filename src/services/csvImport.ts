@@ -16,7 +16,14 @@ export type CsvImportRow = {
   candidates?: Movie[];
   matchConfidence?: number;
   matchReason?: string;
-  status: "matched" | "ambiguous" | "unmatched" | "searching";
+  status: "matched" | "unmatched" | "searching";
+};
+
+export type ImportResolutionProgress = { completed: number; total: number; matched: number };
+export type ImportResolutionOptions = {
+  concurrency?: number;
+  signal?: AbortSignal;
+  onProgress?: (progress: ImportResolutionProgress) => void;
 };
 
 export function parseCsvRecords(text: string) {
@@ -45,28 +52,65 @@ export function parseCsvRecords(text: string) {
 export async function resolveMovieCsvRows(
   rows: CsvImportRow[],
   search: (query: string, year?: string) => Promise<Movie[]>,
+  options: ImportResolutionOptions = {},
 ): Promise<CsvImportRow[]> {
   const resolved = new Array<CsvImportRow>(rows.length);
   let cursor = 0;
+  let completed = 0;
+  let matched = 0;
+  const total = rows.length;
+  const concurrency = Math.min(8, Math.max(1, options.concurrency || 6));
+  const searchCache = new Map<string, Promise<Movie[]>>();
+  const reportProgress = () => options.onProgress?.({ completed, total, matched });
+  reportProgress();
   const worker = async () => {
-    while (cursor < rows.length) {
+    while (cursor < rows.length && !options.signal?.aborted) {
       const index = cursor++;
       const row = rows[index];
-      if (row.matchedMovie) { resolved[index] = row; continue; }
-      try {
-        let searched: Movie[] = [];
-        for (let attempt = 0; attempt < 2; attempt += 1) {
-          try { searched = await search(row.title, row.year); break; }
-          catch (error) { if (attempt === 1) throw error; }
+      let next = row;
+      if (!row.matchedMovie) {
+        try {
+          const cacheKey = `${canonicalMovieTitle(row.title)}|${row.year || ""}`;
+          let request = searchCache.get(cacheKey);
+          if (!request) {
+            request = searchWithRetry(search, row.title, row.year, options.signal);
+            searchCache.set(cacheKey, request);
+          }
+          next = resolveImportCandidates(row, await request);
+        } catch {
+          next = { ...row, candidates: undefined, matchedMovie: undefined, matchReason: "No match found", status: "unmatched" };
         }
-        resolved[index] = resolveImportCandidates(row, searched);
-      } catch {
-        resolved[index] = { ...row, candidates: [], status: "unmatched" };
       }
+      resolved[index] = next;
+      completed += 1;
+      if (next.matchedMovie) matched += 1;
+      if (completed === total || completed % 25 === 0) reportProgress();
     }
   };
-  await Promise.all(Array.from({ length: Math.min(4, Math.max(1, rows.length)) }, worker));
-  return resolved;
+  await Promise.all(Array.from({ length: Math.min(concurrency, Math.max(1, rows.length)) }, worker));
+  reportProgress();
+  return resolved.filter(Boolean);
+}
+
+async function searchWithRetry(search: (query: string, year?: string) => Promise<Movie[]>, title: string, year?: string, signal?: AbortSignal) {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    if (signal?.aborted) return [];
+    try { return await search(title, year); }
+    catch (error) {
+      lastError = error;
+      if (attempt < 2) await wait(200 * 2 ** attempt, signal);
+    }
+  }
+  throw lastError;
+}
+
+function wait(milliseconds: number, signal?: AbortSignal) {
+  return new Promise<void>((resolve) => {
+    if (signal?.aborted) { resolve(); return; }
+    const timeout = globalThis.setTimeout(resolve, milliseconds);
+    signal?.addEventListener("abort", () => { globalThis.clearTimeout(timeout); resolve(); }, { once: true });
+  });
 }
 
 export function resolveImportCandidates(row: CsvImportRow, searched: Movie[]): CsvImportRow {
@@ -74,7 +118,7 @@ export function resolveImportCandidates(row: CsvImportRow, searched: Movie[]): C
     .map((movie) => ({ movie, ...importMatchScore(row, movie) }))
     .sort((left, right) => right.score - left.score || (right.movie.popularity || 0) - (left.movie.popularity || 0) || left.movie.title.localeCompare(right.movie.title))
     .slice(0, 6);
-  if (!candidates.length) return { ...row, candidates: [], status: "unmatched" };
+  if (!candidates.length) return { ...row, candidates: undefined, matchedMovie: undefined, matchReason: "No match found", status: "unmatched" };
   const exactTitle = candidates.filter((candidate) => candidate.exactTitle);
   const exactYear = exactTitle.filter((candidate) => candidate.yearDifference === 0);
   const nearbyYear = exactTitle.filter((candidate) => candidate.yearDifference !== null && candidate.yearDifference <= 1);
@@ -91,11 +135,11 @@ export function resolveImportCandidates(row: CsvImportRow, searched: Movie[]): C
   else if (isLetterboxd && !row.year && best.titleScore >= .9) { matched = best; reason = "Automatically matched by title"; }
   return {
     ...row,
-    candidates: candidates.map((candidate) => candidate.movie),
+    candidates: undefined,
     matchedMovie: matched?.movie,
-    matchConfidence: matched?.score,
-    matchReason: matched ? reason : "Needs review",
-    status: matched ? "matched" : "ambiguous",
+    matchConfidence: matched?.score || best.score,
+    matchReason: matched ? reason : "No confident match found",
+    status: matched ? "matched" : "unmatched",
   };
 }
 
@@ -111,10 +155,6 @@ function importMatchScore(row: CsvImportRow, movie: Movie) {
   const yearScore = yearDifference === 0 ? 1 : yearDifference === 1 ? .75 : yearDifference === null ? .55 : 0;
   const popularityScore = Math.min(1, Math.log10(1 + Math.max(0, movie.popularity || 0)) / 2.5);
   return { exactTitle, titleScore, yearDifference, score: titleScore * .75 + yearScore * .2 + popularityScore * .05 };
-}
-
-export function selectCsvMatch(row: CsvImportRow, movie?: Movie): CsvImportRow {
-  return { ...row, matchedMovie: movie, status: movie ? "matched" : row.candidates?.length ? "ambiguous" : "unmatched" };
 }
 
 export function canonicalMovieTitle(value: string) {
@@ -175,13 +215,17 @@ export function parseMovieCsv(text: string, catalog: Movie[]): CsvImportRow[] {
   const reviewIndex = findColumn(headers, ["review", "notes", "comment"]);
   const savedIndex = findColumn(headers, ["saved", "watchlist", "watchlisted"]);
   if (titleIndex < 0) return [];
+  const catalogByTitle = new Map<string, Movie[]>();
+  catalog.forEach((movie) => {
+    const title = canonicalMovieTitle(movie.title);
+    const matches = catalogByTitle.get(title);
+    if (matches) matches.push(movie);
+    else catalogByTitle.set(title, [movie]);
+  });
   return records.slice(1).map((cells, index) => {
     const title = cells[titleIndex]?.trim() || "";
     const year = yearIndex >= 0 ? cells[yearIndex]?.match(/\d{4}/)?.[0] : undefined;
-    const matches = catalog.filter((movie) => {
-      const sameTitle = canonicalMovieTitle(movie.title) === canonicalMovieTitle(title);
-      return sameTitle && (!year || movie.year === year);
-    });
+    const matches = (catalogByTitle.get(canonicalMovieTitle(title)) || []).filter((movie) => !year || movie.year === year);
     const rawRating = ratingIndex >= 0 ? Number(cells[ratingIndex]) : undefined;
     const rating = rawRating && rawRating > 0 ? Math.min(5, rawRating > 5 ? rawRating / 2 : rawRating) : undefined;
     const watchedValue = watchedIndex >= 0 ? cells[watchedIndex]?.toLowerCase() : "";
@@ -196,7 +240,7 @@ export function parseMovieCsv(text: string, catalog: Movie[]): CsvImportRow[] {
       review: reviewIndex >= 0 ? cells[reviewIndex]?.trim() : undefined,
       sources: ["CSV"],
       matchedMovie: matches.length === 1 ? matches[0] : undefined,
-      status: matches.length === 1 ? "matched" : matches.length > 1 ? "ambiguous" : "unmatched",
+      status: matches.length === 1 ? "matched" : "unmatched",
     } satisfies CsvImportRow;
   }).filter((row) => row.title);
 }

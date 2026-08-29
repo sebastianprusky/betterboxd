@@ -426,20 +426,11 @@ summary { color: var(--accent); cursor: pointer; font-size: .83rem; font-weight:
 .import-dialog > p { color: var(--muted); }
 .import-dialog-backdrop { z-index: 120; }
 .import-summary { font-size: .72rem; }
-.import-list small { color: var(--muted); font-size: .65rem; }
-.import-list { max-height: 22rem; overflow: auto; margin-bottom: 1rem; }
-.import-list > div { display: flex; justify-content: space-between; align-items: center; gap: 1rem; padding: .45rem 0; border-bottom: 1px solid var(--line); font-size: .76rem; }
-.import-list > div > span { min-width: 0; display: grid; gap: .3rem; }
-.import-list select { max-width: 19rem; border: 1px solid var(--line); border-radius: .4rem; background: var(--paper); padding: .35rem; }
-.import-list i { font-style: normal; text-transform: capitalize; }
 .import-ready { padding: .7rem .8rem; border: 1px solid color-mix(in srgb, #397b55 38%, var(--line)); border-radius: .55rem; background: color-mix(in srgb, #397b55 8%, transparent); color: #397b55 !important; }
-.import-unresolved-row { align-items: flex-start !important; }
-.import-candidates { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .45rem; margin-top: .25rem; }
-.import-candidates button { min-width: 0; display: grid; grid-template-columns: 2.4rem minmax(0, 1fr); align-items: center; gap: .45rem; border: 1px solid var(--line); border-radius: .48rem; background: var(--paper-raised); color: var(--ink); padding: .35rem; text-align: left; }
-.import-candidates button:hover { border-color: var(--accent); }
-.import-candidates img { width: 2.4rem; height: 3.5rem; object-fit: contain; border-radius: .2rem; }
-.import-candidates button > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.status-matched { color: #397b55; } .status-ambiguous { color: #a66b1f; } .status-unmatched, .status-searching { color: var(--muted); }
+.import-progress { display: grid; gap: .45rem; margin: .85rem 0; }
+.import-progress > span { height: .38rem; overflow: hidden; border-radius: 999px; background: var(--line); }
+.import-progress > span > i { display: block; height: 100%; border-radius: inherit; background: var(--accent); transition: width .2s ease; }
+.import-progress p { margin: 0; color: var(--muted); font-size: .72rem; }
 .consent-dialog h2 { font-size: 2rem; }
 .consent-dialog p { color: var(--muted); line-height: 1.6; }
 .consent-dialog > div { display: flex; justify-content: flex-end; gap: .5rem; }

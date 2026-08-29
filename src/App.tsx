@@ -4,7 +4,7 @@ import { AccountHub } from "./components/AccountHub";
 import { fallbackMovies } from "./data/fallbackMovies";
 import { genreOptions } from "./data/movieGenres";
 import { emptyCloudState, createMergeKey, excludeWatchedFromWatchlist, mergeGuestAndAccountState } from "./services/accountState";
-import { resolveMovieCsvRows, selectCsvMatch, type CsvImportRow } from "./services/csvImport";
+import { resolveMovieCsvRows, type CsvImportRow, type ImportResolutionProgress } from "./services/csvImport";
 import { mergeImportedRows, parseMovieImportFile, type MovieImportSummary } from "./services/movieImport";
 import { filterAndSortLibraryMovies } from "./services/library";
 import { explainCollaborativeCandidates, loadCollaborativeModel, scoreCollaborativeCandidates, type CollaborativeModel } from "./services/collaborative";
@@ -280,6 +280,7 @@ export default function App() {
   const [importError, setImportError] = useState("");
   const [importOpen, setImportOpen] = useState(false);
   const [importResolving, setImportResolving] = useState(false);
+  const [importProgress, setImportProgress] = useState<ImportResolutionProgress>({ completed: 0, total: 0, matched: 0 });
   const [letterboxdImportMeta, setLetterboxdImportMeta] = useState<LetterboxdImportMeta | null>(() => readJson(storage.letterboxdImport, null));
   const [reviewConsentPrompt, setReviewConsentPrompt] = useState<Movie | null>(null);
   const [reviewAnalysisStatus, setReviewAnalysisStatus] = useState<Record<number, string>>({});
@@ -298,6 +299,7 @@ export default function App() {
   const activeState = useRef<CloudUserState>(emptyCloudState);
   const guestSnapshot = useRef<CloudUserState | null>(null);
   const mergeKey = useRef(readJson<string>(storage.mergeKey, "", legacy.mergeKey) || createMergeKey());
+  const importAbort = useRef<AbortController | null>(null);
   const sprintPage = useRef(1);
   const sprintBusy = useRef(false);
   const sessionStartedAt = useRef(Date.now());
@@ -604,7 +606,15 @@ export default function App() {
   }
 
   function touch(...keys: string[]) {
-    const now = Date.now(); setFieldUpdatedAt((current) => ({ ...current, ...Object.fromEntries(keys.map((key) => [key, now])) })); setStateUpdatedAt(now);
+    touchMany(keys);
+  }
+
+  function touchMany(keys: string[]) {
+    const now = Date.now();
+    const updates: Record<string, number> = {};
+    keys.forEach((key) => { updates[key] = now; });
+    setFieldUpdatedAt((current) => ({ ...current, ...updates }));
+    setStateUpdatedAt(now);
   }
 
   function learn(type: LearningEvent["type"], movie: Movie, label: string, undoKey?: string, source?: LearningEvent["source"]) {
@@ -943,26 +953,42 @@ export default function App() {
   async function handleMovieImport(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0]; if (!file) return;
     event.target.value = "";
+    importAbort.current?.abort();
+    const controller = new AbortController();
+    importAbort.current = controller;
     setImportError("");
     try {
       const parsed = await parseMovieImportFile(file, allMovies);
+      if (controller.signal.aborted) return;
       setImportSummary(parsed.summary);
-      setImportRows(parsed.rows.map((row) => row.matchedMovie ? row : { ...row, status: "searching" }));
+      setImportRows([]);
+      setImportProgress({ completed: 0, total: parsed.rows.length, matched: 0 });
       setImportOpen(true);
       setImportResolving(true);
-      const resolved = await resolveMovieCsvRows(parsed.rows, searchMoviesForImport);
+      const resolved = await resolveMovieCsvRows(parsed.rows, searchMoviesForImport, { signal: controller.signal, onProgress: setImportProgress });
+      if (controller.signal.aborted) return;
       setImportRows(resolved);
-      rememberMovies(resolved.flatMap((row) => row.candidates || []));
+      rememberMovies(resolved.flatMap((row) => row.matchedMovie ? [row.matchedMovie] : []));
     } catch (error) {
+      if (controller.signal.aborted) return;
       setImportSummary(null);
       setImportRows([]);
       setImportError(error instanceof Error ? error.message : "This import could not be read.");
       setImportOpen(true);
-    } finally { setImportResolving(false); }
+    } finally {
+      if (importAbort.current === controller) { setImportResolving(false); importAbort.current = null; }
+    }
   }
 
-  function resolveImportRow(rowNumber: number, movieId: number) {
-    setImportRows((current) => current.map((row) => row.row === rowNumber ? selectCsvMatch(row, row.candidates?.find((movie) => movie.id === movieId)) : row));
+  function closeImport() {
+    importAbort.current?.abort();
+    importAbort.current = null;
+    setImportOpen(false);
+    setImportResolving(false);
+    setImportRows([]);
+    setImportSummary(null);
+    setImportProgress({ completed: 0, total: 0, matched: 0 });
+    setImportError("");
   }
 
   function confirmImport() {
@@ -972,7 +998,11 @@ export default function App() {
     if (importSummary?.kind.startsWith("letterboxd")) {
       setLetterboxdImportMeta({ lastImportedAt: Date.now(), movieCount: matchedRows.length, ratingCount: matchedRows.filter((row) => row.rating).length });
     }
-    touch(...merged.touched); setImportOpen(false);
+    touchMany(merged.touched);
+    setImportOpen(false);
+    setImportRows([]);
+    setImportSummary(null);
+    setImportProgress({ completed: 0, total: 0, matched: 0 });
     void enrichImportedRatingMovies(matchedRows);
   }
 
@@ -1086,7 +1116,7 @@ export default function App() {
       onClose={() => setDetailMovie(null)} onRate={(value) => rateMovie(detailMovie, value)} onToggleLike={() => toggleLike(detailMovie)} onToggleWatched={() => watched[detailMovie.id] ? requestUnwatch(detailMovie) : markWatched(detailMovie)} onSave={() => watchlist[detailMovie.id] ? removeFromWatchlist(detailMovie) : saveMovie(detailMovie, false)} onRestore={() => restoreMovie(detailMovie)} onReview={(value) => updateReview(detailMovie, value)} onUpdateAspect={(id, label, sentiment) => updateAspect(detailMovie.id, id, label, sentiment)} onRemoveAspect={(id) => removeAspect(detailMovie.id, id)} />}
     {unwatchConfirmation && <UnwatchConfirmation movie={unwatchConfirmation} onCancel={() => setUnwatchConfirmation(null)} onConfirm={() => unwatchMovie(unwatchConfirmation)} />}
     {addOpen && <AddMovieDialog query={addQuery} setQuery={setAddQuery} results={addResults} onClose={() => setAddOpen(false)} onWatched={(movie) => { markWatched(movie); setAddOpen(false); }} onSave={(movie) => { saveMovie(movie, false); setAddOpen(false); }} onOpen={openMovie} />}
-    {importOpen && <ImportDialog rows={importRows} summary={importSummary} error={importError} resolving={importResolving} onResolve={resolveImportRow} onClose={() => setImportOpen(false)} onConfirm={confirmImport} />}
+    {importOpen && <ImportDialog rows={importRows} summary={importSummary} error={importError} resolving={importResolving} progress={importProgress} onClose={closeImport} onConfirm={confirmImport} />}
     {reviewConsentPrompt && <ConsentDialog onDecline={() => { setReviewConsentAsked(true); setReviewAnalysisStatus((current) => ({ ...current, [reviewConsentPrompt.id]: "Review saved without analysis." })); setReviewConsentPrompt(null); }} onAccept={() => { setReviewConsent(true); setReviewConsentAsked(true); void runReviewAnalysis(reviewConsentPrompt); setReviewConsentPrompt(null); }} />}
     {tourOpen && <OnboardingTour slide={tourSlide} setSlide={setTourSlide} onClose={closeTour} preferences={preferences} onPreference={applyPreference} onFavorite={applyFavorite} ratingCount={Object.keys(ratings).length} importSummary={importSummary} importMeta={letterboxdImportMeta} onImport={handleMovieImport} onOpen={openMovie} />}
   </div>;
@@ -1374,10 +1404,12 @@ function AddMovieDialog({ query, setQuery, results, onClose, onWatched, onSave, 
   return <div className="modal-backdrop" onMouseDown={onClose}><section className="compact-dialog" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}><div className="sheet-heading"><h2>Add a movie</h2><button className="icon-button" onClick={onClose}>×</button></div><label className="library-search"><Icon name="search"/><input autoFocus value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search by title or person"/></label><div className="add-results">{results.map((movie, index) => <div key={movie.id}><button type="button" className="poster-open-button" onClick={() => onOpen(movie)} aria-label={`View details for ${movie.title}`}><MoviePosterImage movie={movie} size="w92" eager={index < 4}/></button><span><strong>{movie.title}</strong><small>{movie.year}</small></span><button onClick={() => onWatched(movie)}>Watched</button><button onClick={() => onSave(movie)}>Save</button></div>)}</div></section></div>;
 }
 
-function ImportDialog({ rows, summary, error, resolving, onResolve, onClose, onConfirm }: { rows: CsvImportRow[]; summary: MovieImportSummary | null; error: string; resolving: boolean; onResolve: (row: number, movieId: number) => void; onClose: () => void; onConfirm: () => void }) {
+function ImportDialog({ rows, summary, error, resolving, progress, onClose, onConfirm }: { rows: CsvImportRow[]; summary: MovieImportSummary | null; error: string; resolving: boolean; progress: ImportResolutionProgress; onClose: () => void; onConfirm: () => void }) {
   const matched = rows.filter((row) => row.status === "matched");
   const unresolved = rows.filter((row) => row.status !== "matched");
-  return <div className="modal-backdrop import-dialog-backdrop" onMouseDown={onClose}><section className="compact-dialog import-dialog" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}><div className="sheet-heading"><h2>Review import</h2><button className="icon-button" onClick={onClose}>×</button></div>{summary && <p className="import-summary">{summary.kind.startsWith("letterboxd") ? "Letterboxd import" : "Movie import"} · {summary.files.length} {summary.files.length === 1 ? "file" : "files"} · {summary.ratingCount} ratings{summary.likeCount ? ` · ${summary.likeCount} likes` : ""}</p>}<p>{resolving ? "Checking titles against TMDB…" : `${matched.length} matched automatically${unresolved.length ? ` · ${unresolved.length} need review` : ""}.`}</p>{error && <p className="inline-error">{error}</p>}{!error && !rows.length && <p className="inline-error">No recognizable movie rows were found.</p>}{!resolving && !error && rows.length > 0 && unresolved.length === 0 && <p className="import-ready">Every movie has a confident title and year match.</p>}<div className="import-list">{unresolved.slice(0, 80).map((row) => <div className="import-unresolved-row" key={row.row}><span><strong>{row.title}{row.year ? ` (${row.year})` : ""}</strong>{row.sources?.length ? <small>{row.sources.join(" · ")}</small> : null}{row.candidates?.length ? <div className="import-candidates" role="group" aria-label={`Possible matches for ${row.title}`}>{row.candidates.map((movie) => <button type="button" key={movie.id} onClick={() => onResolve(row.row, movie.id)}><MoviePosterImage movie={movie} size="w92"/><span>{movie.title}<small>{movie.year}</small></span></button>)}</div> : null}</span><i className={`status-${row.status}`}>{row.status === "ambiguous" ? "review" : row.status}</i></div>)}</div>{unresolved.length > 80 && <p className="quiet-notice">Resolve the first 80 matches, then the next group will appear.</p>}<button className="primary-button" disabled={!matched.length || resolving} onClick={onConfirm}>Import {matched.length} movies</button></section></div>;
+  const checked = resolving ? progress.completed : rows.length;
+  const matchedCount = resolving ? progress.matched : matched.length;
+  return <div className="modal-backdrop import-dialog-backdrop" onMouseDown={onClose}><section className="compact-dialog import-dialog" role="dialog" aria-modal="true" aria-labelledby="import-title" onMouseDown={(event) => event.stopPropagation()}><div className="sheet-heading"><h2 id="import-title">Import movies</h2><button className="icon-button" onClick={onClose} aria-label="Close import">×</button></div>{summary && <p className="import-summary">{summary.kind.startsWith("letterboxd") ? "Letterboxd import" : "Movie import"} · {summary.files.length} {summary.files.length === 1 ? "file" : "files"} · {summary.ratingCount} ratings{summary.likeCount ? ` · ${summary.likeCount} likes` : ""}</p>}{resolving ? <div className="import-progress" role="status" aria-live="polite"><span><i style={{ width: `${progress.total ? Math.round(checked / progress.total * 100) : 0}%` }}/></span><p>Matching movies automatically… {checked.toLocaleString()} of {progress.total.toLocaleString()}</p></div> : <p>{matchedCount.toLocaleString()} movies matched automatically.</p>}{!resolving && unresolved.length > 0 && <p className="quiet-notice">{unresolved.length.toLocaleString()} {unresolved.length === 1 ? "movie could not" : "movies could not"} be matched and will be skipped.</p>}{error && <p className="inline-error">{error}</p>}{!resolving && !error && rows.length === 0 && <p className="inline-error">No recognizable movies were found.</p>}<button className="primary-button" disabled={!matched.length || resolving} onClick={onConfirm}>Import {matched.length.toLocaleString()} movies</button></section></div>;
 }
 
 function ConsentDialog({ onDecline, onAccept }: { onDecline: () => void; onAccept: () => void }) {

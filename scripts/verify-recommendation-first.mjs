@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { decayingPickWeight, getRatingSignal, isMovieExcluded } from "../src/services/recommendationPolicy.ts";
-import { canonicalMovieTitle, parseMovieCsv, resolveImportCandidates, resolveMovieCsvRows, selectCsvMatch } from "../src/services/csvImport.ts";
+import { canonicalMovieTitle, parseMovieCsv, resolveImportCandidates, resolveMovieCsvRows } from "../src/services/csvImport.ts";
 import { fallbackMovies } from "../src/data/fallbackMovies.ts";
 
 assert(getRatingSignal(5) > getRatingSignal(4));
@@ -28,8 +28,6 @@ assert.equal(quotedRows[0].review, "Sharp, funny,\nand tense");
 const resolvedRows = await resolveMovieCsvRows(rows, async (query) => query === "Unknown" ? [{ ...fallbackMovies[0], id: 999, title: "Unknown", year: "2020" }] : []);
 assert.equal(resolvedRows[1].status, "matched");
 assert.equal(resolvedRows[1].matchedMovie?.id, 999);
-const ambiguous = { ...rows[1], candidates: fallbackMovies.slice(0, 2), status: "ambiguous" };
-assert.equal(selectCsvMatch(ambiguous, fallbackMovies[1]).matchedMovie?.id, fallbackMovies[1].id);
 assert.equal(canonicalMovieTitle("Matrix, The"), "the matrix");
 assert.equal(canonicalMovieTitle("Amélie"), "amelie");
 const importRow = { row: 1, title: "Matrix, The", year: "1999", status: "unmatched" };
@@ -43,7 +41,8 @@ const remake = resolveImportCandidates({ row: 2, title: "Suspiria", status: "unm
   { ...fallbackMovies[0], id: 1, title: "Suspiria", year: "1977", popularity: 30 },
   { ...fallbackMovies[0], id: 2, title: "Suspiria", year: "2018", popularity: 35 },
 ]);
-assert.equal(remake.status, "ambiguous", "same-title remakes without a year require review");
+assert.equal(remake.status, "unmatched", "same-title remakes without a year are skipped rather than guessed");
+assert.equal(remake.candidates, undefined, "unmatched imports do not retain a manual review queue");
 const nearbyRelease = resolveImportCandidates({ row: 3, title: "The Celebration", year: "1998", status: "unmatched" }, [
   { ...fallbackMovies[0], id: 3, title: "The Celebration", year: "1999", popularity: 25 },
   { ...fallbackMovies[0], id: 4, title: "Celebration Day", year: "2012", popularity: 60 },
@@ -57,12 +56,12 @@ assert.equal(aliasMatch.status, "matched", "curated stylized-title aliases auto-
 const weakMatch = resolveImportCandidates({ row: 5, title: "Completely Different", year: "2001", status: "unmatched" }, [
   { ...fallbackMovies[0], id: 7, title: "Another Movie", year: "2001", popularity: 100 },
 ]);
-assert.equal(weakMatch.status, "ambiguous", "weak title similarity is never accepted solely because the year matches");
+assert.equal(weakMatch.status, "unmatched", "weak title similarity is never accepted solely because the year matches");
 const closeCandidates = resolveImportCandidates({ row: 6, title: "The Adventures", year: "2005", status: "unmatched" }, [
   { ...fallbackMovies[0], id: 8, title: "The Adventure", year: "2005", popularity: 50 },
   { ...fallbackMovies[0], id: 9, title: "The Adventurer", year: "2005", popularity: 49 },
 ]);
-assert.equal(closeCandidates.status, "ambiguous", "close fuzzy candidates require manual review rather than a low-margin guess");
+assert.equal(closeCandidates.status, "unmatched", "close fuzzy candidates are skipped rather than sent to manual review");
 const letterboxdDuplicate = resolveImportCandidates({ row: 7, title: "The Movie", year: "2020", letterboxdUri: "https://boxd.it/example", sources: ["ratings.csv"], status: "unmatched" }, [
   { ...fallbackMovies[0], id: 10, title: "The Movie", year: "2020", popularity: 4 },
   { ...fallbackMovies[0], id: 11, title: "The Movie", year: "2020", popularity: 80 },

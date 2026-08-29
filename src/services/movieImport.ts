@@ -20,17 +20,17 @@ export function mergeImportedRows(rows: CsvImportRow[], current: { ratings: Rati
   const reviews = { ...current.reviews };
   const watched = { ...current.watched };
   const watchlist = { ...current.watchlist };
-  const touched: string[] = ["csv-import"];
+  const touched = new Set<string>(["csv-import"]);
   rows.forEach((row) => {
     const movie = row.matchedMovie;
     if (!movie) return;
-    if (row.watched || row.rating) { watched[movie.id] ||= { movie, watchedAt: now }; touched.push(`watched:${movie.id}`, `watchlist:${movie.id}`); delete watchlist[movie.id]; }
-    if (row.rating !== undefined) { ratings[movie.id] = row.rating; touched.push(`rating:${movie.id}`); }
-    if (row.liked) { likes[movie.id] = movie; touched.push(`like:${movie.id}`); }
-    if (row.review) { reviews[movie.id] = row.review; touched.push(`review:${movie.id}`); }
-    if (row.saved && !watched[movie.id]) { watchlist[movie.id] = movie; touched.push(`watchlist:${movie.id}`); }
+    if (row.watched || row.rating) { watched[movie.id] ||= { movie, watchedAt: now }; touched.add(`watched:${movie.id}`); touched.add(`watchlist:${movie.id}`); delete watchlist[movie.id]; }
+    if (row.rating !== undefined) { ratings[movie.id] = row.rating; touched.add(`rating:${movie.id}`); }
+    if (row.liked) { likes[movie.id] = movie; touched.add(`like:${movie.id}`); }
+    if (row.review) { reviews[movie.id] = row.review; touched.add(`review:${movie.id}`); }
+    if (row.saved && !watched[movie.id]) { watchlist[movie.id] = movie; touched.add(`watchlist:${movie.id}`); }
   });
-  return { ratings, likes, reviews, watched, watchlist: excludeWatchedFromWatchlist(watchlist, watched), touched };
+  return { ratings, likes, reviews, watched, watchlist: excludeWatchedFromWatchlist(watchlist, watched), touched: [...touched] };
 }
 
 export async function parseMovieImportFile(file: File, catalog: Movie[]): Promise<{ rows: CsvImportRow[]; summary: MovieImportSummary }> {
@@ -66,6 +66,15 @@ async function parseLetterboxdZip(file: File, catalog: Movie[]) {
 
 function mergeLetterboxdFiles(files: Array<{ name: string; text: string }>, catalog: Movie[]) {
   const merged = new Map<string, CsvImportRow & { ratingPriority?: number }>();
+  const catalogByTitle = new Map<string, Movie[]>();
+  catalog.forEach((movie) => {
+    const titles = new Set([canonicalMovieTitle(movie.title), movie.originalTitle ? canonicalMovieTitle(movie.originalTitle) : ""].filter(Boolean));
+    titles.forEach((title) => {
+      const matches = catalogByTitle.get(title);
+      if (matches) matches.push(movie);
+      else catalogByTitle.set(title, [movie]);
+    });
+  });
   let nextRow = 2;
   for (const file of files) {
     const records = parseCsvRecords(file.text.replace(/^\uFEFF/, ""));
@@ -82,9 +91,10 @@ function mergeLetterboxdFiles(files: Array<{ name: string; text: string }>, cata
       const title = cells[titleIndex]?.trim();
       if (!title) continue;
       const year = yearIndex >= 0 ? cells[yearIndex]?.match(/\d{4}/)?.[0] : undefined;
-      const key = `${canonicalMovieTitle(title)}|${year || ""}`;
+      const canonicalTitle = canonicalMovieTitle(title);
+      const key = `${canonicalTitle}|${year || ""}`;
       const existing = merged.get(key);
-      const matches = catalog.filter((movie) => canonicalMovieTitle(movie.title) === canonicalMovieTitle(title) && (!year || Math.abs(Number(movie.year) - Number(year)) <= 1));
+      const matches = (catalogByTitle.get(canonicalTitle) || []).filter((movie) => !year || Math.abs(Number(movie.year) - Number(year)) <= 1);
       const rawRating = ratingIndex >= 0 ? Number(cells[ratingIndex]) : 0;
       const rating = rawRating > 0 ? Math.min(5, rawRating > 5 ? rawRating / 2 : rawRating) : undefined;
       const ratingPriority = file.name === "ratings.csv" ? 2 : rating ? 1 : 0;
@@ -95,7 +105,7 @@ function mergeLetterboxdFiles(files: Array<{ name: string; text: string }>, cata
       const next: CsvImportRow & { ratingPriority?: number } = existing ? { ...existing } : {
         row: nextRow++, title, year, matchedMovie: matches.length === 1 ? matches[0] : undefined,
         letterboxdUri,
-        status: matches.length === 1 ? "matched" : matches.length > 1 ? "ambiguous" : "unmatched",
+        status: matches.length === 1 ? "matched" : "unmatched",
       };
       if (!next.letterboxdUri && letterboxdUri) next.letterboxdUri = letterboxdUri;
       next.sources = Array.from(new Set([...(next.sources || []), file.name]));
