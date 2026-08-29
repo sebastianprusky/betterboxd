@@ -634,6 +634,9 @@ summary { color: var(--accent); cursor: pointer; font-size: .83rem; font-weight:
 .selection-card > div { animation: selection-copy-in 420ms 160ms cubic-bezier(.22, 1, .36, 1) both; }
 @keyframes selection-copy-in { from { opacity: 0; transform: translateY(8px); } }
 .selection-prediction, .detail-prediction { color: var(--accent); font-size: .78rem; font-weight: 700; }
+.detail-prediction { display: flex; align-items: center; gap: .55rem; width: fit-content; margin: .75rem 0 0; padding: .42rem .62rem; border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--line)); border-radius: 999px; background: var(--accent-soft); }
+.detail-prediction .star-rating { color: var(--gold); }
+.detail-prediction strong { color: var(--ink); font-variant-numeric: tabular-nums; }
 .selection-reason li { color: var(--muted); font-size: .78rem; line-height: 1.5; }
 .auth-return-status { position: fixed; z-index: 80; inset: 0; display: grid; place-content: center; justify-items: center; gap: .55rem; background: color-mix(in srgb, var(--paper) 94%, transparent); backdrop-filter: blur(10px); }
 .auth-return-status > span { width: 2.2rem; height: 2.2rem; border: 2px solid var(--line-dark); border-top-color: var(--accent); border-radius: 50%; animation: auth-spin .8s linear infinite; }

@@ -126,6 +126,8 @@ assert.match(supabaseSource, /skipBrowserRedirect: true/);
 assert.doesNotMatch(appSource, /Developer options/);
 assert.match(appSource, /Update Letterboxd/);
 assert.match(appSource, /Prediction Score/);
+assert.match(appSource, /!detailMovie \|\| watched\[detailMovie\.id\]/, "watched movie popups suppress predictions in favor of actual ratings");
+assert.match(appSource, /!props\.watched && props\.prediction[^\n]*Predicted for you[^\n]*StarRating[^\n]*readOnly/, "unwatched movie popups render predicted star ratings");
 assert.doesNotMatch(appSource, /Usually within/);
 assert.doesNotMatch(appSource, /pick-taste-strength/);
 assert.doesNotMatch(appSource, />Unwatch</);
