@@ -7,7 +7,7 @@ PickAMovie is a clean movie discovery, rating, recommendation, and social web ap
 - Discover page with an embedded Taste Sprint quick-rating flow
 - TMDB-powered movie search when `VITE_TMDB_API_KEY` is configured
 - Ask PickAMovie mode for natural-language requests with local filter parsing, TMDB discover filtering, and semantic ranking for fuzzy intent
-- Server-side OpenAI semantic search when `OPENAI_API_KEY` is configured
+- Server-side OpenAI semantic search and public-movie embeddings when `OPENAI_API_KEY` is configured
 - Fallback demo movie data with real poster URLs for local testing without an API key
 - Half-star rating system stored in `localStorage`
 - Watchlist stored in `localStorage`
@@ -51,7 +51,7 @@ VITE_TMDB_API_KEY=your_tmdb_api_key_here
 OPENAI_API_KEY=your_server_side_openai_api_key_here
 ```
 
-`OPENAI_API_KEY` must remain server-side only. The browser calls `/api/semantic-search`, and the app falls back to local movie matching when the key is absent or the server route is unavailable.
+`OPENAI_API_KEY` must remain server-side only. The browser calls `/api/semantic-search` and `/api/movie-embeddings`; both have local fallbacks when the key or route is unavailable. Movie embeddings contain public metadata only—personal ratings and reviews never leave the device for model training.
 
 The semantic search route is public, so it applies request-size, field-length, candidate-count, warm-instance cache, and basic per-IP rate-limit controls before calling OpenAI. Vercel serverless instances do not share memory globally, so configure provider spend limits before enabling billing.
 

@@ -5,6 +5,7 @@ import { handleSemanticSearchRequest } from "./api/semantic-search";
 import { handleReviewInsightsRequest } from "./api/review-insights";
 import { handleSearchPlanRequest } from "./api/search-plan";
 import { handleAiMovieSearchRequest } from "./api/ai-movie-search";
+import { handleMovieEmbeddingsRequest } from "./api/movie-embeddings";
 
 declare const process: { env: Record<string, string | undefined> };
 
@@ -108,6 +109,16 @@ function semanticSearchApi(): Plugin {
           body,
         });
         await writeFetchResponse(await handleReviewInsightsRequest(fetchRequest), response as NodeResponse);
+      });
+      server.middlewares.use("/api/movie-embeddings", async (request, response) => {
+        const nodeRequest = request as NodeRequest;
+        const body = nodeRequest.method === "POST" ? await readRequestBody(nodeRequest) : undefined;
+        const fetchRequest = new Request(`http://localhost${nodeRequest.url || "/api/movie-embeddings"}`, {
+          method: nodeRequest.method,
+          headers: nodeRequest.headers as HeadersInit,
+          body,
+        });
+        await writeFetchResponse(await handleMovieEmbeddingsRequest(fetchRequest), response as NodeResponse);
       });
     },
   };

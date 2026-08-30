@@ -59,7 +59,7 @@ export function buildRatingCalibration(movies: Movie[], ratings: RatingMap, watc
   const result = runRatingModelTournament(eligible, model);
   const heldOut = result.heldOut;
   const allPoints = heldOut.map(({ entry, prediction }) => toPredictionPoint(entry, prediction));
-  const points = samplePredictionPoints(allPoints, RATING_GRAPH_POINT_LIMIT);
+  const points = allPoints;
   const predicted = heldOut.map((row) => row.prediction.predictedRating);
   const actual = heldOut.map((row) => row.entry.rating);
   const errors = predicted.map((value, index) => Math.abs(value - actual[index]));
@@ -181,21 +181,6 @@ function toPredictionPoint(target: RatedMovie, prediction: RatingPrediction): Ra
     confidence: prediction.starConfidence ?? prediction.confidence, neighborCount: prediction.neighborCount,
     source: prediction.source, calibrated: prediction.calibrated,
   };
-}
-
-function samplePredictionPoints(points: RatingPredictionPoint[], limit: number) {
-  if (points.length <= limit) return [...points];
-  const buckets = new Map<number, RatingPredictionPoint[]>();
-  points.forEach((point) => { const key = Math.round(point.actualRating * 2); buckets.set(key, [...(buckets.get(key) || []), point]); });
-  buckets.forEach((bucket) => bucket.sort((left, right) => left.movie.id - right.movie.id));
-  const keys = [...buckets.keys()].sort((left, right) => left - right);
-  const sampled: RatingPredictionPoint[] = [];
-  for (let row = 0; sampled.length < limit; row += 1) {
-    let found = false;
-    for (const key of keys) { const point = buckets.get(key)?.[row]; if (!point) continue; found = true; sampled.push(point); if (sampled.length >= limit) break; }
-    if (!found) break;
-  }
-  return sampled;
 }
 
 function ratedMovies(movies: Movie[], ratings: RatingMap, watched: WatchedMap) {

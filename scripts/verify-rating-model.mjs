@@ -103,7 +103,7 @@ const chronologicalCalibration = buildRatingCalibration(
   Object.fromEntries(chronologicalEntries.map((entry) => [entry.movie.id, { movie: entry.movie, watchedAt: entry.watchedAt }])),
   model,
 );
-assert.equal(chronologicalCalibration.evaluationCount, 6, "reliable timestamps use a future-facing twenty-percent holdout");
+assert.equal(chronologicalCalibration.evaluationCount, chronologicalEntries.length, "every chronologically ordered title receives a leakage-free held-out prediction");
 
 assert.equal(spearmanCorrelation([1, 2, 3], [1, 2, 3]), 1);
 assert.equal(spearmanCorrelation([1, 2, 3], [3, 2, 1]), -1);
@@ -119,7 +119,7 @@ const largeWatched = Object.fromEntries(largeEntries.map((entry) => [entry.movie
 const largeSample = createRatingCalibrationSample(largeRatings, largeWatched);
 assert.equal(largeSample.movies.length, RATING_CALIBRATION_SAMPLE_LIMIT, "large profiles send only a bounded sample to the prediction worker");
 assert.equal(new Set(Object.values(largeSample.ratings)).size, 10, "the graph sample preserves every used half-star rating level");
-assert.equal(buildRatingCalibration(largeSample.movies, largeSample.ratings, largeSample.watched).points.length, RATING_CALIBRATION_SAMPLE_LIMIT, "large-profile graphs never render thousands of points");
+assert.equal(buildRatingCalibration(largeSample.movies, largeSample.ratings, largeSample.watched).points.length, RATING_CALIBRATION_SAMPLE_LIMIT, "the legacy sample helper remains bounded for compatibility");
 const fullInput = createRatingModelInput(largeRatings, largeWatched);
 assert.equal(fullInput.movies.length, largeEntries.length, "the model input retains every eligible rating even though the graph is bounded");
 const scalableInput = createRatingModelInput(
@@ -129,7 +129,7 @@ const scalableInput = createRatingModelInput(
 const startedAt = performance.now();
 const largeCalibration = buildRatingCalibration(scalableInput.movies, scalableInput.ratings, scalableInput.watched);
 assert.equal(largeCalibration.trainingCount, 2_000, "large profiles train from every rating");
-assert.ok(largeCalibration.points.length <= RATING_CALIBRATION_SAMPLE_LIMIT, "only graph rendering remains capped");
+assert.equal(largeCalibration.points.length, 2_000, "the graph exposes every leakage-free held-out movie while Canvas keeps the DOM bounded");
 assert.notEqual(largeCalibration.status, "building", "a large profile resolves to Ready or Low confidence");
 assert.ok(performance.now() - startedAt < 60_000, "two thousand ratings finish within the background training budget");
 

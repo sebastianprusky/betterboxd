@@ -27,6 +27,9 @@ export type Movie = {
   trailerKey?: string;
   similarMovieIds?: number[];
   recommendedMovieIds?: number[];
+  /** Derived public-data representation. Kept device-local and excluded from account sync. */
+  modelEmbedding?: number[];
+  modelEmbeddingModel?: string;
 };
 
 export type PersonSearchResult = {

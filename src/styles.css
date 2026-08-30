@@ -245,6 +245,7 @@ summary { color: var(--accent); cursor: pointer; font-size: .83rem; font-weight:
 .prediction-score.is-building { color: var(--muted); font-size: clamp(2rem, 5vw, 2.8rem); }
 .prediction-state { width: fit-content; margin: .55rem 0 0; border: 1px solid var(--line-dark); border-radius: 999px; padding: .24rem .5rem; color: var(--muted); font-size: .66rem; font-weight: 700; }
 .prediction-next-step { margin: .45rem 0 0; color: var(--muted); font-size: .72rem; }
+.prediction-enrichment { margin: .45rem 0 0; color: var(--muted); font-size: .68rem; }
 .calibration-chart { display: grid; grid-template-columns: 1.5rem 1.5rem minmax(0, 1fr); grid-template-rows: 240px 1.2rem 1.4rem; align-items: stretch; margin-top: 1.2rem; padding: .4rem .5rem 0; }
 .calibration-y-label { grid-row: 1; grid-column: 1; align-self: center; color: var(--muted); font-size: .62rem; writing-mode: vertical-rl; transform: rotate(180deg); }
 .calibration-y-ticks { position: relative; grid-row: 1; grid-column: 2; color: var(--muted); font-size: .58rem; text-align: right; }
@@ -253,6 +254,13 @@ summary { color: var(--accent); cursor: pointer; font-size: .83rem; font-weight:
 .calibration-field svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
 .calibration-grid-line { stroke: var(--line); stroke-width: .7; vector-effect: non-scaling-stroke; }
 .calibration-ideal-line { stroke: color-mix(in srgb, var(--accent) 68%, transparent); stroke-width: 1; stroke-dasharray: 3 3; vector-effect: non-scaling-stroke; }
+.prediction-canvas-wrap { position: absolute; inset: 0; --prediction-low: #52745c; --prediction-medium: #b07a3f; --prediction-high: #a14e43; }
+.prediction-canvas { width: 100%; height: 100%; display: block; outline: none; cursor: crosshair; }
+.prediction-canvas:focus-visible { box-shadow: inset 0 0 0 2px var(--accent); }
+.prediction-canvas-tooltip { position: absolute; z-index: 4; width: max-content; max-width: min(15rem, 80%); transform: translate(-50%, calc(-100% - .65rem)); border-radius: .4rem; background: var(--ink); color: var(--paper); padding: .45rem .55rem; pointer-events: none; font-size: .66rem; line-height: 1.35; }
+.prediction-canvas-tooltip strong, .prediction-canvas-tooltip span, .prediction-canvas-tooltip small { display: block; }
+.prediction-canvas-tooltip span { margin-top: .12rem; }
+.prediction-canvas-tooltip small { margin-top: .12rem; color: color-mix(in srgb, var(--paper) 72%, transparent); font-size: .59rem; }
 .calibration-dot { position: absolute; width: .72rem; height: .72rem; display: grid; place-items: center; border: 2px solid var(--paper-raised); border-radius: 50%; background: var(--accent); padding: 0; transform: translate(-50%, -50%); box-shadow: 0 0 0 1px var(--accent); }
 .calibration-dot > b { color: #fff; font-size: .48rem; line-height: 1; }
 .calibration-dot span { display: none; position: absolute; z-index: 3; min-width: 12rem; white-space: nowrap; bottom: .95rem; left: 50%; transform: translateX(-50%); border-radius: .4rem; background: var(--ink); color: var(--paper); padding: .45rem .55rem; font-size: .66rem; text-align: left; }

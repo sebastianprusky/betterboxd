@@ -7,7 +7,7 @@ export type PersonalRatingModelKind = "average" | "tmdb" | "content-ranker" | "f
 export type MovieFeatureVector = { values: number[]; collaborative: boolean; contentCoverage: number };
 export type StarCalibration = { anchors: Array<{ utility: number; rating: number; support: number }>; meanRating: number };
 export type PersonalModelSnapshot = {
-  version: "personal-ranking-v2";
+  version: "personal-ranking-v3";
   kind: PersonalRatingModelKind;
   label: string;
   weights: number[];
@@ -32,10 +32,12 @@ export type RatingModelTournamentResult = { tournament: RatingModelTournament; h
 
 type EvaluatedSpec = { kind: PersonalRatingModelKind; heldOut: HeldOutRatingPrediction[]; mae: number; correlation: number; pairwiseAccuracy: number };
 const FACTOR_DIMENSIONS = 64;
-const CONTENT_DIMENSIONS = 96;
-const NUMERIC_DIMENSIONS = 8;
-const FEATURE_DIMENSIONS = FACTOR_DIMENSIONS + CONTENT_DIMENSIONS + NUMERIC_DIMENSIONS;
+const SEMANTIC_DIMENSIONS = 128;
+const CONTENT_DIMENSIONS = 256;
+const NUMERIC_DIMENSIONS = 10;
+const FEATURE_DIMENSIONS = FACTOR_DIMENSIONS + SEMANTIC_DIMENSIONS + CONTENT_DIMENSIONS + NUMERIC_DIMENSIONS;
 const MAX_TRAINING_PAIRS = 50_000;
+const featureCache = new WeakMap<Movie, Map<string, MovieFeatureVector>>();
 const MODEL_LABELS: Record<PersonalRatingModelKind, string> = {
   average: "Your average rating",
   tmdb: "Audience ordering",
@@ -43,22 +45,18 @@ const MODEL_LABELS: Record<PersonalRatingModelKind, string> = {
   "content-ranker": "Movie-trait ranker",
   "hybrid-ranker": "Hybrid preference ranker",
 };
-const RANKER_KINDS: PersonalRatingModelKind[] = ["content-ranker", "factor-ranker", "hybrid-ranker"];
 
 export function runRatingModelTournament(entries: RatingTrainingEntry[], model: CollaborativeModel | null): RatingModelTournamentResult {
   const eligible = sanitizeEntries(entries);
-  const kinds: PersonalRatingModelKind[] = ["average", "tmdb", ...RANKER_KINDS];
-  const evaluated = kinds.map((kind) => evaluateKind(eligible, kind, model));
-  const selected = [...evaluated].sort(compareEvaluations)[0];
+  const selected = evaluateKind(eligible, preferredRankerKind(eligible, model), model);
   const snapshot = fitSnapshot(eligible, selected.kind, model, selected);
-  const heldOut = nestedTournamentPredictions(eligible, model);
   return {
     tournament: {
       kind: selected.kind, label: MODEL_LABELS[selected.kind], validationMae: selected.mae,
       validationCorrelation: selected.correlation, validationPairwiseAccuracy: selected.pairwiseAccuracy,
       snapshot, predict: (movie) => predictWithSnapshot(snapshot, movie, model, eligible),
     },
-    heldOut,
+    heldOut: selected.heldOut,
   };
 }
 
@@ -70,9 +68,11 @@ export function predictWithSnapshot(snapshot: PersonalModelSnapshot, movie: Movi
   const utility = snapshot.kind === "average"
     ? snapshot.calibration.meanRating
     : snapshot.kind === "tmdb" ? tmdbStars(movie, snapshot.calibration.meanRating) : dot(snapshot.weights, feature.values);
-  const predictedRating = snapshot.kind === "average" || snapshot.kind === "tmdb" ? utility : applyStarCalibration(snapshot.calibration, utility);
+  const neighbor = neighborResidual(movie, training, snapshot.kind, model);
+  const calibratedRating = snapshot.kind === "average" || snapshot.kind === "tmdb" ? utility : applyStarCalibration(snapshot.calibration, utility);
+  const predictedRating = calibratedRating + neighbor.adjustment;
   const factorCoverage = feature.collaborative ? snapshot.collaborativeCoverage : 0;
-  const usefulNeighbors = countUsefulNeighbors(movie, training, snapshot.kind, model);
+  const usefulNeighbors = neighbor.support;
   const rankingConfidence = snapshot.kind === "average" || snapshot.kind === "tmdb" ? .3
     : clamp01(.28 + Math.min(1, snapshot.trainingCount / 80) * .27 + Math.min(1, usefulNeighbors / 8) * .18 + factorCoverage * .17 + feature.contentCoverage * .1);
   const starReliability = clamp01(1 - snapshot.validationMae / 2);
@@ -92,7 +92,16 @@ function evaluateKind(entries: RatingTrainingEntry[], kind: PersonalRatingModelK
   const heldOut: HeldOutRatingPrediction[] = [];
   validationFolds(entries).forEach(({ training, targets }) => {
     const snapshot = fitSnapshot(training, kind, model);
-    targets.forEach((entry) => heldOut.push({ entry, prediction: predictWithSnapshot(snapshot, entry.movie, model, training), selectedModel: kind }));
+    targets.forEach((entry) => {
+      const baselines = baselinePredictions(entry.movie, training);
+      heldOut.push({
+        entry,
+        prediction: predictWithSnapshot(snapshot, entry.movie, model, training),
+        selectedModel: kind,
+        userMeanBaseline: baselines.userMean,
+        tmdbBaseline: baselines.tmdb,
+      });
+    });
   });
   const predicted = heldOut.map((row) => row.prediction.predictedRating);
   const actual = heldOut.map((row) => row.entry.rating);
@@ -103,58 +112,17 @@ function evaluateKind(entries: RatingTrainingEntry[], kind: PersonalRatingModelK
   };
 }
 
-function nestedTournamentPredictions(entries: RatingTrainingEntry[], model: CollaborativeModel | null) {
-  const heldOut: HeldOutRatingPrediction[] = [];
-  validationFolds(entries).forEach(({ training, targets }) => {
-    const kind = selectKindFromTraining(training, model);
-    const snapshot = fitSnapshot(training, kind, model);
-    targets.forEach((entry) => {
-      const baselines = baselinePredictions(entry.movie, training);
-      heldOut.push({ entry, prediction: predictWithSnapshot(snapshot, entry.movie, model, training), selectedModel: kind, userMeanBaseline: baselines.userMean, tmdbBaseline: baselines.tmdb });
-    });
-  });
-  return heldOut.sort((left, right) => left.entry.movie.id - right.entry.movie.id);
-}
-
-function selectKindFromTraining(entries: RatingTrainingEntry[], model: CollaborativeModel | null) {
+function preferredRankerKind(entries: RatingTrainingEntry[], model: CollaborativeModel | null) {
   if (entries.length < 6) return "average" as PersonalRatingModelKind;
-  const sample = balancedEntrySample(entries, Math.min(80, entries.length));
-  const ordered = [...sample].sort((left, right) => left.rating - right.rating || left.movie.id - right.movie.id);
-  const targets = ordered.filter((_, index) => index % 5 === 0);
-  const training = ordered.filter((_, index) => index % 5 !== 0);
   const coverage = entries.filter((entry) => Boolean(model?.items[entry.movie.id])).length / entries.length;
-  const kinds: PersonalRatingModelKind[] = coverage >= .08
-    ? ["average", "tmdb", "content-ranker", "factor-ranker", "hybrid-ranker"]
-    : ["average", "tmdb", "content-ranker"];
-  return kinds.map((kind) => {
-    const snapshot = fitSnapshot(training, kind, model);
-    const predicted = targets.map((entry) => predictWithSnapshot(snapshot, entry.movie, model, training).predictedRating);
-    const actual = targets.map((entry) => entry.rating);
-    return { kind, heldOut: [], mae: mean(predicted.map((value, index) => Math.abs(value - actual[index]))), correlation: spearmanCorrelation(predicted, actual), pairwiseAccuracy: pairwiseOrderingAccuracy(predicted, actual) };
-  }).sort(compareEvaluations)[0].kind;
+  return coverage >= .08 ? "hybrid-ranker" : "content-ranker";
 }
-
-function balancedEntrySample(entries: RatingTrainingEntry[], limit: number) {
-  if (entries.length <= limit) return [...entries];
-  const buckets = new Map<number, RatingTrainingEntry[]>();
-  entries.forEach((entry) => { const key = Math.round(entry.rating * 2); buckets.set(key, [...(buckets.get(key) || []), entry]); });
-  buckets.forEach((bucket) => bucket.sort((left, right) => left.movie.id - right.movie.id));
-  const keys = [...buckets.keys()].sort((left, right) => left - right); const output: RatingTrainingEntry[] = [];
-  for (let row = 0; output.length < limit; row += 1) { let found = false; for (const key of keys) { const entry = buckets.get(key)?.[row]; if (!entry) continue; found = true; output.push(entry); if (output.length >= limit) break; } if (!found) break; }
-  return output;
-}
-
-function compareEvaluations(left: EvaluatedSpec, right: EvaluatedSpec) {
-  return right.pairwiseAccuracy - left.pairwiseAccuracy || left.mae - right.mae
-    || right.correlation - left.correlation || modelPriority(left.kind) - modelPriority(right.kind);
-}
-function modelPriority(kind: PersonalRatingModelKind) { return (["hybrid-ranker", "factor-ranker", "content-ranker", "tmdb", "average"] as PersonalRatingModelKind[]).indexOf(kind); }
 
 function fitSnapshot(entries: RatingTrainingEntry[], kind: PersonalRatingModelKind, model: CollaborativeModel | null, evaluation?: EvaluatedSpec): PersonalModelSnapshot {
   const meanRating = bayesianUserMean(entries);
   const collaborativeCoverage = entries.length ? entries.filter((entry) => Boolean(model?.items[entry.movie.id])).length / entries.length : 0;
   if (kind === "average" || kind === "tmdb" || entries.length < 2) return {
-    version: "personal-ranking-v2", kind, label: MODEL_LABELS[kind], weights: [], calibration: { anchors: [], meanRating },
+    version: "personal-ranking-v3", kind, label: MODEL_LABELS[kind], weights: [], calibration: { anchors: [], meanRating },
     trainingCount: entries.length, collaborativeCoverage, validationPairwiseAccuracy: evaluation?.pairwiseAccuracy ?? .5,
     validationMae: evaluation?.mae ?? 0, validationCorrelation: evaluation?.correlation ?? 0,
   };
@@ -162,7 +130,7 @@ function fitSnapshot(entries: RatingTrainingEntry[], kind: PersonalRatingModelKi
   const weights = trainPairwiseRanker(entries, features);
   const calibration = fitStarCalibration(features.map((feature) => dot(weights, feature)), entries.map((entry) => entry.rating), meanRating);
   return {
-    version: "personal-ranking-v2", kind, label: MODEL_LABELS[kind], weights, calibration, trainingCount: entries.length,
+    version: "personal-ranking-v3", kind, label: MODEL_LABELS[kind], weights, calibration, trainingCount: entries.length,
     collaborativeCoverage, validationPairwiseAccuracy: evaluation?.pairwiseAccuracy ?? .5,
     validationMae: evaluation?.mae ?? 0, validationCorrelation: evaluation?.correlation ?? 0,
   };
@@ -173,7 +141,7 @@ function trainPairwiseRanker(entries: RatingTrainingEntry[], features: number[][
   const pairs = deterministicPairs(entries, MAX_TRAINING_PAIRS);
   if (!pairs.length) return weights;
   let step = 0;
-  for (let epoch = 0; epoch < 5; epoch += 1) {
+  for (let epoch = 0; epoch < 3; epoch += 1) {
     const forward = epoch % 2 === 0;
     for (let offset = 0; offset < pairs.length; offset += 1) {
       const pair = pairs[forward ? offset : pairs.length - 1 - offset];
@@ -226,7 +194,7 @@ function fitStarCalibration(utilities: number[], ratings: number[], meanRating: 
     blocks.splice(index, 2, { utility: (left.utility * left.support + right.utility * right.support) / support, rating: (left.rating * left.support + right.rating * right.support) / support, support });
     if (index > 0) index -= 1;
   }
-  const shrinkage = Math.min(.92, ordered.length / (ordered.length + 18));
+  const shrinkage = Math.min(.985, ordered.length / (ordered.length + 12));
   return { anchors: blocks.map((block) => ({ utility: roundFive(block.utility), rating: roundFive(meanRating + (block.rating - meanRating) * shrinkage), support: block.support })), meanRating };
 }
 
@@ -248,8 +216,11 @@ function validationFolds(entries: RatingTrainingEntry[]) {
   const uniqueTimes = new Set(orderedByTime.map((entry) => entry.watchedAt).filter(Boolean));
   const timeRange = (orderedByTime[orderedByTime.length - 1]?.watchedAt || 0) - (orderedByTime[0]?.watchedAt || 0);
   if (entries.length >= 20 && uniqueTimes.size >= Math.max(8, entries.length * .35) && timeRange >= 30 * 24 * 60 * 60 * 1_000) {
-    const targetCount = Math.max(4, Math.ceil(entries.length * .2));
-    return [{ training: orderedByTime.slice(0, -targetCount), targets: orderedByTime.slice(-targetCount) }];
+    const foldCount = 5;
+    return Array.from({ length: foldCount }, (_, fold) => ({
+      training: orderedByTime.filter((_, index) => index % foldCount !== fold),
+      targets: orderedByTime.filter((_, index) => index % foldCount === fold),
+    }));
   }
   const foldCount = Math.min(5, Math.max(2, Math.floor(entries.length / 4)));
   const byIdentity = [...entries].sort((left, right) => left.movie.id - right.movie.id);
@@ -257,16 +228,24 @@ function validationFolds(entries: RatingTrainingEntry[]) {
 }
 
 export function movieFeatures(movie: Movie, kind: PersonalRatingModelKind, model: CollaborativeModel | null): MovieFeatureVector {
+  const cacheKey = `${kind}:${model?.version || "content-only"}`;
+  const cached = featureCache.get(movie)?.get(cacheKey);
+  if (cached) return cached;
   const values = Array(FEATURE_DIMENSIONS).fill(0); const item = model?.items[movie.id];
   const useFactors = kind === "factor-ranker" || kind === "hybrid-ranker"; const useContent = kind === "content-ranker" || kind === "hybrid-ranker";
   if (useFactors && item) item.factors.slice(0, FACTOR_DIMENSIONS).forEach((value, index) => { values[index] = value; });
   let contentSignals = 0;
   if (useContent) {
+    const semanticOffset = FACTOR_DIMENSIONS;
+    const semantic = movie.modelEmbedding?.length ? projectEmbedding(movie.modelEmbedding, SEMANTIC_DIMENSIONS) : textEmbedding(`${movie.title} ${movie.overview}`, SEMANTIC_DIMENSIONS);
+    semantic.forEach((value, index) => { values[semanticOffset + index] = value; });
+    const contentOffset = FACTOR_DIMENSIONS + SEMANTIC_DIMENSIONS;
     const add = (prefix: string, raw: string, weight: number) => {
       const normalized = normalize(raw); if (!normalized) return;
-      const hash = stableHash(`${prefix}:${normalized}`); const index = FACTOR_DIMENSIONS + hash % CONTENT_DIMENSIONS;
+      const hash = stableHash(`${prefix}:${normalized}`); const index = contentOffset + hash % CONTENT_DIMENSIONS;
       values[index] += (hash & 1 ? 1 : -1) * weight; contentSignals += 1;
     };
+    normalize(movie.overview).split(" ").filter((token) => token.length > 3).slice(0, 60).forEach((value) => add("description", value, .055));
     movie.genres.filter((genre) => genre !== "TV Movie").forEach((value) => add("genre", value, .52));
     (movie.keywords || []).slice(0, 16).forEach((value) => add("keyword", value, .22));
     (movie.cast || []).slice(0, 8).forEach((value) => add("cast", value, .13));
@@ -274,21 +253,58 @@ export function movieFeatures(movie: Movie, kind: PersonalRatingModelKind, model
     if (movie.originalLanguage) add("language", movie.originalLanguage, .14);
     const year = Number(movie.year); if (Number.isFinite(year)) add("era", `${Math.floor(year / 10) * 10}s`, .2);
   }
-  const numeric = FACTOR_DIMENSIONS + CONTENT_DIMENSIONS;
+  const numeric = FACTOR_DIMENSIONS + SEMANTIC_DIMENSIONS + CONTENT_DIMENSIONS;
   values[numeric] = clamp(((movie.voteAverage || 7) / 2 - 3.5) / 1.5, -1.5, 1.5);
   values[numeric + 1] = clamp(Math.log10(1 + (movie.voteCount || 0)) / 5, 0, 1);
   values[numeric + 2] = clamp(Math.log10(1 + (movie.popularity || 0)) / 4, 0, 1);
   values[numeric + 3] = clamp((Number(movie.year) - 2000) / 60 || 0, -1.5, 1.5);
   values[numeric + 4] = clamp(((movie.runtime || 120) - 120) / 100, -1, 1);
-  values[numeric + 5] = item?.bias || 0; values[numeric + 6] = item ? 1 : 0; values[numeric + 7] = clamp(contentSignals / 20, 0, 1);
-  return { values, collaborative: Boolean(item), contentCoverage: clamp(contentSignals / 12, 0, 1) };
+  values[numeric + 5] = item?.bias || 0; values[numeric + 6] = item ? 1 : 0; values[numeric + 7] = clamp(contentSignals / 30, 0, 1);
+  values[numeric + 8] = clamp((movie.overview?.length || 0) / 1_000, 0, 1);
+  values[numeric + 9] = clamp(((movie.recommendedMovieIds?.length || 0) + (movie.similarMovieIds?.length || 0)) / 30, 0, 1);
+  const result = { values, collaborative: Boolean(item), contentCoverage: clamp(contentSignals / 12, 0, 1) };
+  const movieCache = featureCache.get(movie) || new Map<string, MovieFeatureVector>();
+  movieCache.set(cacheKey, result); featureCache.set(movie, movieCache);
+  return result;
 }
 
-function countUsefulNeighbors(movie: Movie, entries: RatingTrainingEntry[], kind: PersonalRatingModelKind, model: CollaborativeModel | null) {
-  if (!entries.length || kind === "average" || kind === "tmdb") return 0;
-  const target = movieFeatures(movie, kind, model).values; let count = 0;
-  for (const entry of entries) { if (cosine(target, movieFeatures(entry.movie, kind, model).values) >= .18) count += 1; if (count >= 12) break; }
-  return count;
+function neighborResidual(movie: Movie, entries: RatingTrainingEntry[], kind: PersonalRatingModelKind, model: CollaborativeModel | null) {
+  if (!entries.length || kind === "average" || kind === "tmdb") return { adjustment: 0, support: 0 };
+  const meanRating = bayesianUserMean(entries);
+  const direct = new Set([...(movie.recommendedMovieIds || []), ...(movie.similarMovieIds || [])]);
+  const candidates: Array<{ similarity: number; residual: number; direct: boolean }> = [];
+  const target = movieFeatures(movie, kind, model).values;
+  for (const entry of entries) {
+    if (entry.movie.id === movie.id) continue;
+    const reverse = entry.movie.recommendedMovieIds?.includes(movie.id) || entry.movie.similarMovieIds?.includes(movie.id);
+    const isDirect = direct.has(entry.movie.id) || Boolean(reverse);
+    const sharesGenre = movie.genres.some((genre) => entry.movie.genres.includes(genre));
+    if (!isDirect && !sharesGenre) continue;
+    const similarity = cosineRange(target, movieFeatures(entry.movie, kind, model).values, FACTOR_DIMENSIONS, SEMANTIC_DIMENSIONS);
+    if (!isDirect && similarity < .18) continue;
+    candidates.push({ similarity: Math.max(similarity, isDirect ? .42 : 0), residual: entry.rating - meanRating, direct: isDirect });
+  }
+  candidates.sort((left, right) => Number(right.direct) - Number(left.direct) || right.similarity - left.similarity);
+  const neighbors = candidates.slice(0, 16);
+  let weight = 0; let residual = 0;
+  neighbors.forEach((neighbor) => { const nextWeight = neighbor.similarity ** 2 * (neighbor.direct ? 1.35 : 1); weight += nextWeight; residual += neighbor.residual * nextWeight; });
+  const support = neighbors.length;
+  const shrinkage = support / (support + 5);
+  return { adjustment: weight ? clamp(residual / weight * shrinkage * .72, -.85, .85) : 0, support };
+}
+
+function projectEmbedding(source: number[], dimensions: number) {
+  const output = Array(dimensions).fill(0);
+  source.forEach((value, index) => { if (!Number.isFinite(value)) return; const hash = stableHash(`embedding:${index}`); output[hash % dimensions] += value * (hash & 1 ? 1 : -1); });
+  const magnitude = Math.sqrt(dot(output, output));
+  return magnitude ? output.map((value) => value / magnitude) : output;
+}
+
+function textEmbedding(text: string, dimensions: number) {
+  const output = Array(dimensions).fill(0);
+  normalize(text).split(" ").filter((token) => token.length > 2).forEach((token) => { const hash = stableHash(`text:${token}`); output[hash % dimensions] += (hash & 1 ? 1 : -1) * Math.min(1.5, .55 + token.length / 12); });
+  const magnitude = Math.sqrt(dot(output, output));
+  return magnitude ? output.map((value) => value / magnitude) : output;
 }
 
 function sanitizeEntries(entries: RatingTrainingEntry[]) {
@@ -342,7 +358,15 @@ function ranks(values: number[]) {
 function bayesianUserMean(entries: RatingTrainingEntry[]) { return (entries.reduce((sum, entry) => sum + entry.rating, 0) + 14) / (entries.length + 4); }
 function tmdbStars(movie: Movie, fallback: number) { return movie.voteAverage && (movie.voteCount || 0) >= 20 ? clamp(movie.voteAverage / 2, .5, 5) : fallback; }
 function dot(left: number[], right: number[]) { let sum = 0; const length = Math.min(left.length, right.length); for (let index = 0; index < length; index += 1) sum += left[index] * right[index]; return sum; }
-function cosine(left: number[], right: number[]) { const product = dot(left, right); const denominator = Math.sqrt(dot(left, left) * dot(right, right)); return denominator ? product / denominator : 0; }
+function cosineRange(left: number[], right: number[], start: number, length: number) {
+  let product = 0; let leftMagnitude = 0; let rightMagnitude = 0;
+  const end = Math.min(left.length, right.length, start + length);
+  for (let index = start; index < end; index += 1) {
+    product += left[index] * right[index]; leftMagnitude += left[index] ** 2; rightMagnitude += right[index] ** 2;
+  }
+  const denominator = Math.sqrt(leftMagnitude * rightMagnitude);
+  return denominator ? product / denominator : 0;
+}
 function sigmoid(value: number) { if (value > 20) return 1; if (value < -20) return 0; return 1 / (1 + Math.exp(-value)); }
 function stableHash(value: string) { let hash = 2166136261; for (let index = 0; index < value.length; index += 1) { hash ^= value.charCodeAt(index); hash = Math.imul(hash, 16777619); } return hash >>> 0; }
 function normalize(value: string) { return value.toLowerCase().normalize("NFKD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, " ").trim(); }
