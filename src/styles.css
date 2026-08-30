@@ -243,6 +243,7 @@ summary { color: var(--accent); cursor: pointer; font-size: .83rem; font-weight:
 .prediction-score { display: block; margin-top: .25rem; font-family: var(--serif); font-size: clamp(2.5rem, 6vw, 3.6rem); line-height: 1; font-variant-numeric: tabular-nums; }
 .prediction-score small { margin-left: .2rem; color: var(--muted); font-family: var(--sans); font-size: .72rem; font-weight: 500; }
 .prediction-score.is-building { color: var(--muted); font-size: clamp(2rem, 5vw, 2.8rem); }
+.prediction-state { width: fit-content; margin: .55rem 0 0; border: 1px solid var(--line-dark); border-radius: 999px; padding: .24rem .5rem; color: var(--muted); font-size: .66rem; font-weight: 700; }
 .prediction-next-step { margin: .45rem 0 0; color: var(--muted); font-size: .72rem; }
 .calibration-chart { display: grid; grid-template-columns: 1.5rem 1.5rem minmax(0, 1fr); grid-template-rows: 240px 1.2rem 1.4rem; align-items: stretch; margin-top: 1.2rem; padding: .4rem .5rem 0; }
 .calibration-y-label { grid-row: 1; grid-column: 1; align-self: center; color: var(--muted); font-size: .62rem; writing-mode: vertical-rl; transform: rotate(180deg); }
@@ -262,6 +263,8 @@ summary { color: var(--accent); cursor: pointer; font-size: .83rem; font-weight:
 .calibration-dot:hover span, .calibration-dot:focus span { display: block; }
 .calibration-x-ticks { position: relative; grid-row: 2; grid-column: 3; color: var(--muted); font-size: .58rem; }
 .calibration-x-ticks span { position: absolute; top: .25rem; transform: translateX(-50%); font-variant-numeric: tabular-nums; }
+.calibration-x-ticks span:first-child { transform: none; }
+.calibration-x-ticks span:last-child { transform: translateX(-100%); }
 .calibration-x-label { grid-row: 3; grid-column: 3; justify-self: center; color: var(--muted); font-size: .62rem; }
 .prediction-info-dialog { width: min(30rem, 100%); max-height: calc(100dvh - 2rem); overflow: auto; border: 1px solid var(--line); border-radius: 1rem; background: var(--paper-raised); box-shadow: var(--shadow); padding: 1.25rem; }
 .prediction-info-dialog p { color: var(--ink); font-size: .82rem; line-height: 1.6; }

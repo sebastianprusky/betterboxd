@@ -8,18 +8,32 @@ export type CollaborativeItem = {
   support: number;
   neighbors: CollaborativeNeighbor[];
 };
-export type CollaborativeModel = { version: string; dimensions: 64; items: Record<string, CollaborativeItem> };
+export type CollaborativeModel = { version: string; dimensions: number; items: Record<string, CollaborativeItem> };
+export type MovieRepresentationProvider = {
+  version: string;
+  dimensions: number;
+  item: (movieId: number) => CollaborativeItem | undefined;
+};
 
 let modelPromise: Promise<CollaborativeModel | null> | null = null;
 
 export function loadCollaborativeModel() {
   if (!modelPromise) {
-    const modelUrl = (import.meta.env.VITE_MOVIELENS_MODEL_URL as string | undefined) || "/models/movielens-small-svd64-v1.json";
-    modelPromise = fetch(modelUrl)
+    const modelUrl = import.meta.env.VITE_MOVIELENS_MODEL_URL as string | undefined;
+    const enabled = import.meta.env.VITE_ENABLE_MOVIELENS_MODEL === "true" && Boolean(modelUrl);
+    modelPromise = !enabled ? Promise.resolve(null) : fetch(modelUrl as string)
       .then((response) => response.ok ? response.json() : null)
       .catch(() => null);
   }
   return modelPromise;
+}
+
+export function createMovieRepresentationProvider(model: CollaborativeModel | null): MovieRepresentationProvider {
+  return {
+    version: model?.version || "content-only-v2",
+    dimensions: model?.dimensions || 0,
+    item: (movieId) => model?.items[movieId],
+  };
 }
 
 export function scoreCollaborativeCandidates(model: CollaborativeModel | null, ratings: RatingMap, movies: Movie[]) {

@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { decayingPickWeight, getRatingSignal, isMovieExcluded } from "../src/services/recommendationPolicy.ts";
 import { canonicalMovieTitle, parseMovieCsv, resolveImportCandidates, resolveMovieCsvRows } from "../src/services/csvImport.ts";
 import { fallbackMovies } from "../src/data/fallbackMovies.ts";
+import { createMovieRepresentationProvider } from "../src/services/collaborative.ts";
 
 assert(getRatingSignal(5) > getRatingSignal(4));
 assert(getRatingSignal(1) < 0);
@@ -74,11 +74,12 @@ const originalTitleMatch = resolveImportCandidates({ row: 8, title: "La vita è 
 assert.equal(originalTitleMatch.status, "matched", "Letterboxd titles match TMDB original-language titles automatically");
 assert.equal(originalTitleMatch.matchedMovie?.id, 12);
 
-const collaborativeModel = JSON.parse(readFileSync(new URL("../public/models/movielens-small-svd64-v1.json", import.meta.url), "utf8"));
-assert.equal(collaborativeModel.dimensions, 64);
-assert(Object.keys(collaborativeModel.items).length >= 4000);
-const collaborativeItem = Object.values(collaborativeModel.items)[0];
-assert.equal(collaborativeItem.factors.length, 64);
-assert(collaborativeItem.neighbors.length > 0);
+const collaborativeItem = { tmdbId: fallbackMovies[0].id, factors: Array(64).fill(0), bias: .1, support: 100, neighbors: [] };
+const collaborativeModel = { version: "synthetic-provider", dimensions: 64, items: { [fallbackMovies[0].id]: collaborativeItem } };
+const provider = createMovieRepresentationProvider(collaborativeModel);
+assert.equal(provider.version, "synthetic-provider");
+assert.equal(provider.dimensions, 64);
+assert.equal(provider.item(fallbackMovies[0].id), collaborativeItem);
+assert.equal(createMovieRepresentationProvider(null).version, "content-only-v2");
 
 console.log("recommendation-first verification passed");

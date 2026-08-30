@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { buildRatingCalibration, createRatingCalibrationSample, predictCandidateRatings, RATING_CALIBRATION_SAMPLE_LIMIT } from "../src/services/ratingCalibration.ts";
+import { buildRatingCalibration, createRatingCalibrationSample, createRatingModelInput, predictCandidateRatings, RATING_CALIBRATION_SAMPLE_LIMIT } from "../src/services/ratingCalibration.ts";
 import { pairwiseOrderingAccuracy, spearmanCorrelation, trainRatingModelTournament } from "../src/services/personalRatingModel.ts";
 
 const clamp = (value, minimum, maximum) => Math.max(minimum, Math.min(maximum, value));
@@ -37,6 +37,11 @@ const watched = Object.fromEntries(entries.map((entry) => [entry.movie.id, { mov
 
 const calibration = buildRatingCalibration(movies, ratings, watched, model);
 assert.equal(calibration.status, "ready", "a learnable polarized profile passes the held-out usefulness gate");
+assert.equal(calibration.predictionScore, Math.round(calibration.pairwiseAccuracy * 100), "the score is the understandable held-out ordering rate");
+assert.equal(calibration.trainingCount, entries.length);
+assert.equal(calibration.evaluationCount, entries.length);
+assert.equal(calibration.rankingReady, true);
+assert.equal(calibration.starReady, true, "a separately accurate star calibrator clears its own gate");
 assert.ok(calibration.predictiveSkill > .35, "the score measures improvement over a simple average");
 assert.ok(calibration.rankCorrelation > .8, "the model orders held-out ratings rather than clustering around the mean");
 assert.ok(calibration.pairwiseAccuracy > .8);
@@ -50,7 +55,8 @@ model.items[high.id] = { tmdbId: high.id, factors: factor(.9), bias: 0, support:
 model.items[low.id] = { tmdbId: low.id, factors: factor(-.9), bias: 0, support: 100, neighbors: [] };
 const candidatePredictions = predictCandidateRatings([high, low], ratings, watched, model);
 assert.ok(candidatePredictions.get(high.id).predictedRating - candidatePredictions.get(low.id).predictedRating >= 1.5, "the fitted taste vector meaningfully separates candidates");
-assert.ok(candidatePredictions.get(high.id).confidence >= .65);
+assert.ok(candidatePredictions.get(high.id).rankingConfidence >= .65);
+assert.ok(candidatePredictions.get(high.id).starConfidence >= .65);
 
 const target = calibration.points[0];
 const changedTarget = buildRatingCalibration(movies, { ...ratings, [target.movie.id]: target.actualRating === 5 ? .5 : 5 }, watched, model).points.find((point) => point.movie.id === target.movie.id);
@@ -62,8 +68,10 @@ const flatModel = {
 };
 const unstructuredRatings = Object.fromEntries(entries.map((entry, index) => [entry.movie.id, [1.5, 4.5, 2.5, 4, 3][index % 5]]));
 const unstructured = buildRatingCalibration(movies, unstructuredRatings, watched, flatModel);
-assert.equal(unstructured.status, "building", "an average-like model cannot appear ready without held-out ranking signal");
-assert.equal(unstructured.predictionScore, undefined);
+assert.equal(unstructured.status, "low-confidence", "an ample but unlearnable profile is honestly low confidence, not perpetually building");
+assert.equal(typeof unstructured.predictionScore, "number");
+assert.equal(unstructured.rankingReady, false);
+assert.equal(unstructured.starReady, false);
 assert.ok(unstructured.rankCorrelation < .2);
 
 const sparseRatings = Object.fromEntries(entries.slice(0, 5).map((entry) => [entry.movie.id, entry.rating]));
@@ -73,6 +81,29 @@ assert.equal(buildRatingCalibration(movies, sparseRatings, sparseWatched, model)
 const narrowRatings = Object.fromEntries(entries.map((entry) => [entry.movie.id, 3.7 + entry.x * .18]));
 const narrow = buildRatingCalibration(movies, narrowRatings, watched, model);
 assert.ok(narrow.predictionSpread <= narrow.actualRatingSpread + .15, "naturally narrow profiles are not stretched for visual variety");
+
+const contentEntries = Array.from({ length: 40 }, (_, index) => {
+  const positive = index % 2 === 0;
+  const item = movie(12_000 + index, 0, { genres: positive ? ["Drama", "Mystery"] : ["Comedy", "Family"], keywords: positive ? ["slow burn", "moral ambiguity"] : ["slapstick", "family vacation"] });
+  return { movie: item, rating: positive ? 4.5 : 2, watchedAt: 1 };
+});
+const contentCalibration = buildRatingCalibration(
+  contentEntries.map((entry) => entry.movie),
+  Object.fromEntries(contentEntries.map((entry) => [entry.movie.id, entry.rating])),
+  Object.fromEntries(contentEntries.map((entry) => [entry.movie.id, { movie: entry.movie, watchedAt: entry.watchedAt }])),
+);
+assert.equal(contentCalibration.status, "ready", "content features remain useful when collaborative coverage is unavailable");
+assert.match(contentCalibration.selectedModel, /trait|hybrid/i);
+
+const day = 24 * 60 * 60 * 1_000;
+const chronologicalEntries = entries.map((entry, index) => ({ ...entry, watchedAt: (index + 1) * 40 * day }));
+const chronologicalCalibration = buildRatingCalibration(
+  chronologicalEntries.map((entry) => entry.movie),
+  Object.fromEntries(chronologicalEntries.map((entry) => [entry.movie.id, entry.rating])),
+  Object.fromEntries(chronologicalEntries.map((entry) => [entry.movie.id, { movie: entry.movie, watchedAt: entry.watchedAt }])),
+  model,
+);
+assert.equal(chronologicalCalibration.evaluationCount, 6, "reliable timestamps use a future-facing twenty-percent holdout");
 
 assert.equal(spearmanCorrelation([1, 2, 3], [1, 2, 3]), 1);
 assert.equal(spearmanCorrelation([1, 2, 3], [3, 2, 1]), -1);
@@ -89,5 +120,17 @@ const largeSample = createRatingCalibrationSample(largeRatings, largeWatched);
 assert.equal(largeSample.movies.length, RATING_CALIBRATION_SAMPLE_LIMIT, "large profiles send only a bounded sample to the prediction worker");
 assert.equal(new Set(Object.values(largeSample.ratings)).size, 10, "the graph sample preserves every used half-star rating level");
 assert.equal(buildRatingCalibration(largeSample.movies, largeSample.ratings, largeSample.watched).points.length, RATING_CALIBRATION_SAMPLE_LIMIT, "large-profile graphs never render thousands of points");
+const fullInput = createRatingModelInput(largeRatings, largeWatched);
+assert.equal(fullInput.movies.length, largeEntries.length, "the model input retains every eligible rating even though the graph is bounded");
+const scalableInput = createRatingModelInput(
+  Object.fromEntries(largeEntries.slice(0, 2_000).map((entry) => [entry.movie.id, entry.rating])),
+  Object.fromEntries(largeEntries.slice(0, 2_000).map((entry) => [entry.movie.id, { movie: entry.movie, watchedAt: entry.watchedAt }])),
+);
+const startedAt = performance.now();
+const largeCalibration = buildRatingCalibration(scalableInput.movies, scalableInput.ratings, scalableInput.watched);
+assert.equal(largeCalibration.trainingCount, 2_000, "large profiles train from every rating");
+assert.ok(largeCalibration.points.length <= RATING_CALIBRATION_SAMPLE_LIMIT, "only graph rendering remains capped");
+assert.notEqual(largeCalibration.status, "building", "a large profile resolves to Ready or Low confidence");
+assert.ok(performance.now() - startedAt < 60_000, "two thousand ratings finish within the background training budget");
 
 console.log("Personal rating model tournament and honest score checks passed.");

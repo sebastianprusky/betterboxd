@@ -52,6 +52,7 @@ export function recommendMovies({
   collaborativeEvidence,
   candidatePredictions,
   predictionEnabled = false,
+  predictionStarsEnabled = false,
   mode,
   excludedIds = [],
   limit = 18,
@@ -72,6 +73,7 @@ export function recommendMovies({
   collaborativeEvidence?: Map<number, string>;
   candidatePredictions?: Map<number, RatingPrediction>;
   predictionEnabled?: boolean;
+  predictionStarsEnabled?: boolean;
   mode: RecommendationMode;
   excludedIds?: number[];
   limit?: number;
@@ -109,8 +111,9 @@ export function recommendMovies({
         taste * weights.taste + quality * weights.quality + popularity * weights.popularity +
         novelty * weights.novelty + collaborative * weights.collaborative + explicit + (saved ? 0.025 : 0);
       const prediction = candidatePredictions?.get(movie.id);
-      const confidentPrediction = predictionEnabled && prediction && prediction.confidence >= .65 ? prediction : undefined;
-      const predictionScore = confidentPrediction ? clamp01((confidentPrediction.predictedRating - .5) / 4.5) : 0;
+      const confidentPrediction = predictionEnabled && prediction && (prediction.rankingConfidence ?? prediction.confidence) >= .65 ? prediction : undefined;
+      const visiblePrediction = predictionStarsEnabled && confidentPrediction && (confidentPrediction.starConfidence ?? confidentPrediction.confidence) >= .65 ? confidentPrediction : undefined;
+      const predictionScore = confidentPrediction ? confidentPrediction.rankingScore ?? clamp01((confidentPrediction.predictedRating - .5) / 4.5) : 0;
       const score = blendPromptRelevance(confidentPrediction ? baseScore * .88 + predictionScore * .12 : baseScore, promptRelevance);
       const signals = normalizeSignals([
         ...(promptRelevance === undefined ? [] : [{ label: "Your request", value: clamp01(promptRelevance), detail: "Directly matches the request you entered" }]),
@@ -120,7 +123,7 @@ export function recommendMovies({
         { label: "Something new", value: novelty, detail: "Balances familiarity with discovery" },
       ]);
       const explanation = buildRecommendationExplanation({ movie, ratings, likes, watchlist, interest, preferences, promptEvidence: promptEvidence[movie.id], saved, signals, likedMovies });
-      return { movie, score, signals, reason: explanation.reason, evidence: explanation.evidence, evidenceItems: explanation.evidenceItems, predictedRating: confidentPrediction };
+      return { movie, score, signals, reason: explanation.reason, evidence: explanation.evidence, evidenceItems: explanation.evidenceItems, predictedRating: visiblePrediction };
     })
     .sort((a, b) => b.score - a.score);
 

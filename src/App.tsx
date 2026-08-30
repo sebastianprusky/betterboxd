@@ -12,7 +12,7 @@ import { analyzeReview } from "./services/reviewInsights";
 import { linkPickOutcome, recommendationEvent } from "./services/outcomeTracking";
 import { createPickSlots, replacePickSlot, type PickSlot } from "./services/pickSession";
 import { arrangeWatchlistCandidates, recommendMovies, type RecommendationResult } from "./services/recommendations";
-import { buildRatingCalibration, buildTasteStrength, createRatingCalibrationSample, predictCandidateRatings, ratingToPercent, type RatingCalibration } from "./services/ratingCalibration";
+import { buildRatingCalibration, buildTasteStrength, createRatingModelInput, predictCandidateRatings, ratingToPercent, type RatingCalibration } from "./services/ratingCalibration";
 import { rankTasteSprintCandidates, type TasteSprintCandidate } from "./services/tasteSprintSelector";
 import { buildTasteProfileSample } from "./services/tasteProfileSample";
 import { removeWatchedOutcome } from "./services/unwatch";
@@ -99,6 +99,7 @@ const storage = {
   cache: "pickamovie-movie-cache",
   letterboxdImport: "pickamovie-letterboxd-import-meta",
   includeWatchlist: "pickamovie-include-watchlist-recommendations",
+  ratingModel: "pickamovie-personal-rating-model-v2",
 };
 
 const legacy: Partial<Record<keyof typeof storage, string[]>> = {
@@ -144,6 +145,17 @@ function readJson<T>(key: string, fallback: T, oldKeys: string[] = []): T {
 
 function writeJson(key: string, value: unknown) {
   try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* local persistence is best effort */ }
+}
+
+function ratingModelCacheKey(ratings: RatingMap, watched: WatchedMap, representationVersion: string) {
+  let hash = 2166136261;
+  const update = (value: string) => { for (let index = 0; index < value.length; index += 1) { hash ^= value.charCodeAt(index); hash = Math.imul(hash, 16777619); } };
+  update(representationVersion);
+  Object.keys(ratings).sort((left, right) => Number(left) - Number(right)).forEach((id) => {
+    const entry = watched[id]; const movie = entry?.movie;
+    update(`${id}:${ratings[id]}:${entry?.watchedAt || 0}:${movie?.genres.join(",") || ""}:${movie?.director || ""}:${movie?.originalLanguage || ""}:${movie?.keywords?.slice(0, 16).join(",") || ""}|`);
+  });
+  return `v2:${Object.keys(ratings).length}:${(hash >>> 0).toString(36)}`;
 }
 
 function deferJsonWrite(key: string, value: unknown) {
@@ -255,6 +267,7 @@ export default function App() {
   const [ratingCalibration, setRatingCalibration] = useState<RatingCalibration>(() => buildRatingCalibration([], {}, {}));
   const [candidatePredictions, setCandidatePredictions] = useState<Map<number, RatingPrediction>>(() => new Map());
   const [ratingModelPending, setRatingModelPending] = useState(false);
+  const [ratingModelStage, setRatingModelStage] = useState("");
   const [filters, setFilters] = useState<PickFilters>(defaultFilters);
   const [pickMode, setPickMode] = useState<PickMode>("idle");
   const [promptDraft, setPromptDraft] = useState("");
@@ -478,62 +491,96 @@ export default function App() {
   const collaborativeEvidence = useMemo(() => explainCollaborativeCandidates(collaborativeModel, deferredRatings, realTimeCandidates), [collaborativeModel, deferredRatings, realTimeCandidates]);
   useEffect(() => {
     const requestId = ++ratingModelRequest.current;
-    const sample = createRatingCalibrationSample(deferredRatings, deferredWatched);
+    const sample = createRatingModelInput(deferredRatings, deferredWatched);
+    const cacheKey = ratingModelCacheKey(deferredRatings, deferredWatched, collaborativeModel?.version || "content-only");
+    const cached = readJson<{ key: string; calibration?: RatingCalibration } | null>(storage.ratingModel, null);
+    if (cached?.key === cacheKey && cached.calibration?.modelSnapshot?.version === "personal-ranking-v2") {
+      setRatingCalibration(cached.calibration);
+      setRatingModelPending(false);
+      setRatingModelStage("");
+      return;
+    }
     let cancelled = false;
     let fallbackTimeout = 0;
     setRatingModelPending(true);
     setCandidatePredictions(new Map());
-    const applyResult = (calibration: RatingCalibration, predictions: Array<[number, RatingPrediction]>) => {
+    const applyResult = (calibration: RatingCalibration) => {
       if (cancelled || requestId !== ratingModelRequest.current) return;
       setRatingCalibration(calibration);
-      setCandidatePredictions(new Map(predictions));
+      writeJson(storage.ratingModel, { key: cacheKey, calibration });
       setRatingModelPending(false);
+      setRatingModelStage("");
     };
     const calculateOnMainThread = () => {
       const calibration = buildRatingCalibration(sample.movies, sample.ratings, sample.watched, collaborativeModel);
-      const predictions = calibration.benchmarkPassed ? [...predictCandidateRatings(candidateMovies, sample.ratings, sample.watched, collaborativeModel).entries()] : [];
-      applyResult(calibration, predictions);
+      applyResult(calibration);
     };
     if (typeof Worker === "undefined") {
       fallbackTimeout = window.setTimeout(calculateOnMainThread, 0);
       return () => { cancelled = true; window.clearTimeout(fallbackTimeout); };
     }
     const worker = new Worker(new URL("./workers/ratingModelWorker.ts", import.meta.url), { type: "module" });
-    worker.onmessage = (event: MessageEvent<{ requestId: number; calibration: RatingCalibration; predictions: Array<[number, RatingPrediction]> }>) => {
-      if (event.data.requestId === requestId) applyResult(event.data.calibration, event.data.predictions);
+    worker.onmessage = (event: MessageEvent<{ requestId: number; calibration?: RatingCalibration; predictions?: Array<[number, RatingPrediction]>; progress?: string }>) => {
+      if (event.data.requestId !== requestId) return;
+      if (event.data.progress) { setRatingModelStage(event.data.progress); return; }
+      if (!event.data.calibration || !event.data.predictions) return;
+      applyResult(event.data.calibration);
       worker.terminate();
     };
     worker.onerror = () => {
       worker.terminate();
       if (!cancelled) fallbackTimeout = window.setTimeout(calculateOnMainThread, 0);
     };
-    worker.postMessage({ requestId, ...sample, candidates: candidateMovies, model: collaborativeModel });
+    worker.postMessage({ requestId, ...sample, candidates: [] });
     return () => { cancelled = true; worker.terminate(); window.clearTimeout(fallbackTimeout); };
-  }, [deferredRatings, deferredWatched, candidateMovies, collaborativeModel]);
-  const predictionModelReady = !ratingModelPending && ratingCalibration.benchmarkPassed;
+  }, [deferredRatings, deferredWatched, collaborativeModel]);
+  const predictionModelReady = !ratingModelPending && ratingCalibration.rankingReady;
+  const predictionStarsReady = predictionModelReady && ratingCalibration.starReady;
   useEffect(() => {
-    if (!detailMovie || watched[detailMovie.id] || !predictionModelReady || candidatePredictions.has(detailMovie.id)) return;
-    const movie = detailMovie;
-    const sample = createRatingCalibrationSample(deferredRatings, deferredWatched);
+    const snapshot = ratingCalibration.modelSnapshot;
+    if (!predictionModelReady || !snapshot || !candidateMovies.length) { setCandidatePredictions(new Map()); return; }
+    const input = createRatingModelInput(deferredRatings, deferredWatched);
     let cancelled = false;
     let fallbackTimeout = 0;
-    const applyPrediction = (prediction?: RatingPrediction) => {
-      if (!cancelled && prediction) setCandidatePredictions((current) => new Map(current).set(movie.id, prediction));
-    };
-    const calculateOnMainThread = () => applyPrediction(predictCandidateRatings([movie], sample.ratings, sample.watched, collaborativeModel).get(movie.id));
+    const applyPredictions = (predictions: Array<[number, RatingPrediction]>) => { if (!cancelled) setCandidatePredictions(new Map(predictions)); };
+    const calculateOnMainThread = () => applyPredictions([...predictCandidateRatings(candidateMovies, input.ratings, input.watched, collaborativeModel, snapshot).entries()]);
     if (typeof Worker === "undefined") {
       fallbackTimeout = window.setTimeout(calculateOnMainThread, 0);
       return () => { cancelled = true; window.clearTimeout(fallbackTimeout); };
     }
     const worker = new Worker(new URL("./workers/ratingModelWorker.ts", import.meta.url), { type: "module" });
-    worker.onmessage = (event: MessageEvent<{ predictions: Array<[number, RatingPrediction]> }>) => { applyPrediction(event.data.predictions[0]?.[1]); worker.terminate(); };
+    worker.onmessage = (event: MessageEvent<{ predictions?: Array<[number, RatingPrediction]>; progress?: string }>) => {
+      if (event.data.progress) return;
+      applyPredictions(event.data.predictions || []);
+      worker.terminate();
+    };
     worker.onerror = () => { worker.terminate(); if (!cancelled) fallbackTimeout = window.setTimeout(calculateOnMainThread, 0); };
-    worker.postMessage({ requestId: ratingModelRequest.current, ...sample, candidates: [movie], model: collaborativeModel, calibrate: false });
+    worker.postMessage({ requestId: ratingModelRequest.current, ...input, candidates: candidateMovies, snapshot, calibrate: false });
     return () => { cancelled = true; worker.terminate(); window.clearTimeout(fallbackTimeout); };
-  }, [detailMovie, watched, predictionModelReady, candidatePredictions, deferredRatings, deferredWatched, collaborativeModel]);
+  }, [candidateMovies, deferredRatings, deferredWatched, collaborativeModel, predictionModelReady, ratingCalibration.modelSnapshot]);
+  useEffect(() => {
+    if (!detailMovie || watched[detailMovie.id] || !predictionStarsReady || candidatePredictions.has(detailMovie.id) || !ratingCalibration.modelSnapshot) return;
+    const movie = detailMovie;
+    const sample = createRatingModelInput(deferredRatings, deferredWatched);
+    let cancelled = false;
+    let fallbackTimeout = 0;
+    const applyPrediction = (prediction?: RatingPrediction) => {
+      if (!cancelled && prediction) setCandidatePredictions((current) => new Map(current).set(movie.id, prediction));
+    };
+    const calculateOnMainThread = () => applyPrediction(predictCandidateRatings([movie], sample.ratings, sample.watched, collaborativeModel, ratingCalibration.modelSnapshot).get(movie.id));
+    if (typeof Worker === "undefined") {
+      fallbackTimeout = window.setTimeout(calculateOnMainThread, 0);
+      return () => { cancelled = true; window.clearTimeout(fallbackTimeout); };
+    }
+    const worker = new Worker(new URL("./workers/ratingModelWorker.ts", import.meta.url), { type: "module" });
+    worker.onmessage = (event: MessageEvent<{ predictions?: Array<[number, RatingPrediction]>; progress?: string }>) => { if (event.data.progress) return; applyPrediction(event.data.predictions?.[0]?.[1]); worker.terminate(); };
+    worker.onerror = () => { worker.terminate(); if (!cancelled) fallbackTimeout = window.setTimeout(calculateOnMainThread, 0); };
+    worker.postMessage({ requestId: ratingModelRequest.current, ...sample, candidates: [movie], snapshot: ratingCalibration.modelSnapshot, calibrate: false });
+    return () => { cancelled = true; worker.terminate(); window.clearTimeout(fallbackTimeout); };
+  }, [detailMovie, watched, predictionStarsReady, candidatePredictions, deferredRatings, deferredWatched, collaborativeModel, ratingCalibration.modelSnapshot]);
   const personalizedRanked = useMemo(() => recommendMovies({
-    movies: candidateMovies, tasteMovies: tasteProfileMovies, ratings: deferredRatings, likes: deferredLikes, watchlist: deferredWatchlist, watched: deferredWatched, interest: deferredInterest, preferences: deferredPreferences, pickIntents: deferredPickIntents, reviewInsights: deferredReviewInsights, promptScores, promptEvidence, collaborativeScores, collaborativeEvidence, candidatePredictions, predictionEnabled: predictionModelReady, mode: "balanced", limit: 30,
-  }), [candidateMovies, tasteProfileMovies, deferredRatings, deferredLikes, deferredWatchlist, deferredWatched, deferredInterest, deferredPreferences, deferredPickIntents, deferredReviewInsights, promptScores, promptEvidence, collaborativeScores, collaborativeEvidence, candidatePredictions, predictionModelReady]);
+    movies: candidateMovies, tasteMovies: tasteProfileMovies, ratings: deferredRatings, likes: deferredLikes, watchlist: deferredWatchlist, watched: deferredWatched, interest: deferredInterest, preferences: deferredPreferences, pickIntents: deferredPickIntents, reviewInsights: deferredReviewInsights, promptScores, promptEvidence, collaborativeScores, collaborativeEvidence, candidatePredictions, predictionEnabled: predictionModelReady, predictionStarsEnabled: predictionStarsReady, mode: "balanced", limit: 30,
+  }), [candidateMovies, tasteProfileMovies, deferredRatings, deferredLikes, deferredWatchlist, deferredWatched, deferredInterest, deferredPreferences, deferredPickIntents, deferredReviewInsights, promptScores, promptEvidence, collaborativeScores, collaborativeEvidence, candidatePredictions, predictionModelReady, predictionStarsReady]);
   const ranked = useMemo(() => {
     const base = Object.keys(promptScores).length
       ? [...personalizedRanked].sort((a, b) => (promptScores[b.movie.id] || 0) - (promptScores[a.movie.id] || 0) || b.score - a.score || (b.movie.popularity || 0) - (a.movie.popularity || 0))
@@ -1152,9 +1199,9 @@ export default function App() {
   const tasteSignals = useMemo(() => buildTasteSignals(tasteProfileMovies, ratings, likes, interest, preferences, reviewInsights), [tasteProfileMovies, ratings, likes, interest, preferences, reviewInsights]);
   const tasteStrength = useMemo(() => buildTasteStrength({ movies: tasteProfileMovies, ratings, likes, watched, interest, preferences, picks: pickIntents, model: collaborativeModel }), [tasteProfileMovies, ratings, likes, watched, interest, preferences, pickIntents, collaborativeModel]);
   const detailPrediction = useMemo(() => {
-    if (!detailMovie || watched[detailMovie.id] || !predictionModelReady || ratingCalibration.points.length < 8) return undefined;
+    if (!detailMovie || watched[detailMovie.id] || !predictionStarsReady || ratingCalibration.trainingCount < 8) return undefined;
     return candidatePredictions.get(detailMovie.id);
-  }, [detailMovie, predictionModelReady, ratingCalibration.points.length, watched, candidatePredictions]);
+  }, [detailMovie, predictionStarsReady, ratingCalibration.trainingCount, watched, candidatePredictions]);
   const sprintMovie = activeSprintCandidate?.movie;
   return <div className={tab === "pick" && pickMode === "idle" ? "app-shell is-empty-pick" : "app-shell"}>
     <a className="skip-link" href="#main-content">Skip to content</a>
@@ -1173,7 +1220,7 @@ export default function App() {
         onWatched={markWatched} onSave={saveMovie} onPick={chooseMovie} onSwap={swapPick} onReject={rejectMovie} onOpen={openMovie} onClearStreaming={() => updatePickFilters((current) => ({ ...current, providerIds: [], includeTheaters: false }))} developerMode={developerMode}
       />}
       {tab === "taste" && <TasteView movie={sprintMovie} candidate={activeSprintCandidate} developerMode={developerMode} loading={sprintLoading} error={sprintError} watchlist={watchlist} ratings={ratings} signals={tasteSignals} events={learningEvents}
-        preferences={preferences} ratingCalibration={ratingCalibration} ratingModelPending={ratingModelPending} tasteStrength={tasteStrength} onAnswer={answerSprint} onWatched={(movie) => markWatched(movie, true)} onSave={(movie) => saveMovie(movie, false)} onRetry={refillSprint} onUndo={undoLearning} onPreference={applyPreference} onFavorite={applyFavorite} onOpen={openMovie} />}
+        preferences={preferences} ratingCalibration={ratingCalibration} ratingModelPending={ratingModelPending} ratingModelStage={ratingModelStage} tasteStrength={tasteStrength} onAnswer={answerSprint} onWatched={(movie) => markWatched(movie, true)} onSave={(movie) => saveMovie(movie, false)} onRetry={refillSprint} onUndo={undoLearning} onPreference={applyPreference} onFavorite={applyFavorite} onOpen={openMovie} />}
       {tab === "library" && <LibraryView movies={libraryMovies} filter={libraryFilter} setFilter={setLibraryFilter} watchedFilter={libraryWatchedFilter} setWatchedFilter={setLibraryWatchedFilter} sort={librarySort} setSort={setLibrarySort} query={libraryQuery} setQuery={setLibraryQuery} ratings={ratings} likes={likes} watched={watched} watchlist={watchlist}
         onOpen={openMovie} onAdd={() => setAddOpen(true)} onImport={handleMovieImport} onToggleWatched={requestUnwatch} onToggleLike={toggleLike} />}
     </main>
@@ -1324,7 +1371,7 @@ function PreferenceControls({ preferences, onPreference, onFavorite, onOpenMovie
   return <div className={compact ? "preference-controls is-compact" : "preference-controls"}><div className="preference-control-row"><strong>Genres</strong><GenrePreferenceSelect values={preferences.genres} onToggle={(genre) => onPreference("genres", genre)} /></div><div className="preference-control-row"><strong>Directors you like</strong><PreferenceSearchPicker kind="directors" selected={preferences.directors} onToggle={(name) => onPreference("directors", name)} /></div><div className="preference-control-row"><strong>Actors you like</strong><PreferenceSearchPicker kind="actors" selected={preferences.actors} onToggle={(name) => onPreference("actors", name)} /></div><div className="preference-control-row"><strong>Favorite movies</strong><PreferenceSearchPicker kind="movies" selected={Object.values(preferences.favoriteMovies)} onToggle={onFavorite} onOpenMovie={onOpenMovie} /></div></div>;
 }
 
-function TasteView(props: { movie?: Movie; candidate: TasteSprintCandidate | null; developerMode: boolean; loading: boolean; error: string; watchlist: WatchlistMap; ratings: RatingMap; signals: TasteSignal[]; events: LearningEvent[]; preferences: OnboardingPreferences; ratingCalibration: RatingCalibration; ratingModelPending: boolean; tasteStrength: TasteStrength; onAnswer: (movie: Movie, value: InterestValue) => void; onWatched: (movie: Movie) => void; onSave: (movie: Movie) => void; onRetry: () => void; onUndo: (event: LearningEvent) => void; onPreference: (kind: "genres" | "directors" | "actors", value: string) => void; onFavorite: (movie: Movie) => void; onOpen: (movie: Movie) => void }) {
+function TasteView(props: { movie?: Movie; candidate: TasteSprintCandidate | null; developerMode: boolean; loading: boolean; error: string; watchlist: WatchlistMap; ratings: RatingMap; signals: TasteSignal[]; events: LearningEvent[]; preferences: OnboardingPreferences; ratingCalibration: RatingCalibration; ratingModelPending: boolean; ratingModelStage: string; tasteStrength: TasteStrength; onAnswer: (movie: Movie, value: InterestValue) => void; onWatched: (movie: Movie) => void; onSave: (movie: Movie) => void; onRetry: () => void; onUndo: (event: LearningEvent) => void; onPreference: (kind: "genres" | "directors" | "actors", value: string) => void; onFavorite: (movie: Movie) => void; onOpen: (movie: Movie) => void }) {
   const [historyOpen, setHistoryOpen] = useState(false);
   return <section className="taste-page page-enter">
     <div className="sprint-section"><div className="section-title-row"><div><h1>Taste Sprint</h1><p>Keep going whenever you want sharper recommendations.</p></div></div>
@@ -1332,7 +1379,7 @@ function TasteView(props: { movie?: Movie; candidate: TasteSprintCandidate | nul
     </div>
     <div className="taste-lab"><div className="taste-summary"><TasteStrengthCard strength={props.tasteStrength}/><h2>Your taste</h2>{props.signals.length ? <div className="taste-signals" aria-label="Current taste signals">{props.signals.slice(0, 6).map((signal) => <div className="taste-signal" key={signal.id}><span><strong>{signal.label}</strong><small>{signal.category} · {signal.evidence} {signal.evidence === 1 ? "signal" : "signals"}</small></span><i><b style={{ width: `${Math.max(8, signal.weight * 100)}%` }}/></i></div>)}</div> : <p className="empty-copy">Ratings, reactions, and preferences will build your taste summary.</p>}
       <details className="preference-editor"><summary>Edit preferences</summary><PreferenceControls preferences={props.preferences} onPreference={props.onPreference} onFavorite={props.onFavorite} onOpenMovie={props.onOpen} /></details>
-      <PredictionCheck calibration={props.ratingCalibration} pending={props.ratingModelPending} /></div>
+      <PredictionCheck calibration={props.ratingCalibration} pending={props.ratingModelPending} stage={props.ratingModelStage} /></div>
       <div className="learning-log"><h2>Recently learned</h2>{props.events.slice(-6).reverse().map((event) => <LearningRow key={event.id} event={event} rating={props.ratings[event.movie.id]} onOpen={props.onOpen} onUndo={props.onUndo}/>) }{!props.events.length && <p className="empty-copy">Your reactions will appear here.</p>}{props.events.length > 6 && <button className="secondary-button learning-see-more" onClick={() => setHistoryOpen(true)}>See more</button>}</div>
     </div>
     {historyOpen && <LearningHistoryDialog events={props.events} ratings={props.ratings} onClose={() => setHistoryOpen(false)} onOpen={props.onOpen} onUndo={props.onUndo}/>}
@@ -1359,9 +1406,9 @@ function LearningHistoryDialog({ events, ratings, onClose, onOpen, onUndo }: { e
   return <div className="modal-backdrop" onMouseDown={onClose}><section className="learning-history-dialog" ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="learning-history-title" onMouseDown={(event) => event.stopPropagation()}><div className="sheet-heading"><div><h2 id="learning-history-title">Recently learned</h2><p>{events.length} saved taste signals</p></div><button className="icon-button" onClick={onClose} aria-label="Close learning history">×</button></div><div className="learning-history-list">{events.slice(-100).reverse().map((event) => <LearningRow key={event.id} event={event} rating={ratings[event.movie.id]} onOpen={onOpen} onUndo={onUndo}/>)}</div></section></div>;
 }
 
-function PredictionCheck({ calibration, pending }: { calibration: RatingCalibration; pending: boolean }) {
+function PredictionCheck({ calibration, pending, stage }: { calibration: RatingCalibration; pending: boolean; stage: string }) {
   const [infoOpen, setInfoOpen] = useState(false);
-  const needed = Math.max(0, 8 - calibration.points.length);
+  const needed = Math.max(0, 8 - calibration.trainingCount);
   const ticks = [.5, 1, 2, 3, 4, 5];
   const groupedPoints = useMemo(() => {
     const groups = new Map<string, typeof calibration.points>();
@@ -1374,11 +1421,12 @@ function PredictionCheck({ calibration, pending }: { calibration: RatingCalibrat
   const buildingAction = needed
     ? `Rate ${needed} more watched ${needed === 1 ? "movie" : "movies"}.`
     : calibration.actualRatingSpread < .65 ? "Use more of the rating scale when it feels honest." : "Rate a few more movies you felt strongly about.";
+  const progressLabel = stage === "features" ? "Preparing your movie history…" : stage === "validation" ? "Testing hidden ratings…" : stage === "calibration" ? "Calibrating predicted stars…" : "Updating your model…";
   return <section className="prediction-check" aria-labelledby="prediction-score-title" aria-busy={pending}>
     <div className="prediction-score-heading"><span id="prediction-score-title">Prediction Score</span><button type="button" className="prediction-info-button" aria-label="How the Prediction Score works" onClick={() => setInfoOpen(true)}>?</button></div>
     <strong className={`prediction-score ${pending || calibration.status === "building" ? "is-building" : ""}`}>{pending ? "Updating" : calibration.predictionScore === undefined ? "Building" : <>{calibration.predictionScore}<small>/100</small></>}</strong>
-    {pending ? <p className="prediction-next-step">Checking your ratings…</p> : calibration.status === "building" && <p className="prediction-next-step">{buildingAction}</p>}
-    {!pending && calibration.points.length >= 8 && <div className="calibration-chart" aria-label="Predicted ratings compared with actual ratings">
+    {pending ? <p className="prediction-next-step">{progressLabel}</p> : calibration.status === "building" ? <p className="prediction-next-step">{buildingAction}</p> : calibration.status === "low-confidence" ? <p className="prediction-state">Low confidence</p> : null}
+    {!pending && calibration.trainingCount >= 8 && <div className="calibration-chart" aria-label="Predicted ratings compared with actual ratings">
       <span className="calibration-y-label">Actual rating</span>
       <div className="calibration-y-ticks" aria-hidden="true">{ticks.map((tick) => <span key={tick} style={{ top: `${100 - ratingToPercent(tick)}%` }}>{tick}</span>)}</div>
       <div className="calibration-field">
@@ -1412,7 +1460,7 @@ function PredictionInfoDialog({ calibration, onClose }: { calibration: ReturnTyp
     return () => { document.removeEventListener("keydown", onKeyDown); returnFocus.current?.focus(); };
   }, [onClose]);
   const strongerBaseline = Math.min(calibration.userMeanBaselineError || Infinity, calibration.tmdbBaselineError || Infinity);
-  return <div className="modal-backdrop" onMouseDown={onClose}><section className="prediction-info-dialog" ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="prediction-info-title" onMouseDown={(event) => event.stopPropagation()}><div className="sheet-heading"><h2 id="prediction-info-title">How your score works</h2><button className="icon-button" onClick={onClose} aria-label="Close Prediction Score explanation">×</button></div><p>PickAMovie hides each movie’s rating, lets several private models compete, and tests whether the winner can beat simply guessing your average.</p><p>A score of 0 means the model is no better than that average. A score of 100 means its held-out predictions were effectively exact. A clustered average-like model cannot earn a strong score.</p>{calibration.points.length < 8 ? <p>Your score is building until you have eight watched-and-rated movies.</p> : calibration.benchmarkPassed ? <p>The model tournament passed {calibration.points.length} private tests and showed useful separation between movies you rated differently. {calibration.selectedModel} is currently selected.</p> : <p>Your {calibration.points.length} tests are still building because no model has yet beaten the simple baselines while ordering your ratings reliably. More honest high and low ratings are especially useful.</p>}<small>All testing happens privately on this device. The selected model’s typical error is {calibration.meanAbsoluteError.toFixed(1)} stars; the stronger simple baseline is {Number.isFinite(strongerBaseline) ? strongerBaseline.toFixed(1) : "not available"} stars.</small></section></div>;
+  return <div className="modal-backdrop" onMouseDown={onClose}><section className="prediction-info-dialog" ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="prediction-info-title" onMouseDown={(event) => event.stopPropagation()}><div className="sheet-heading"><h2 id="prediction-info-title">How your score works</h2><button className="icon-button" onClick={onClose} aria-label="Close Prediction Score explanation">×</button></div><p>PickAMovie hides ratings during testing, then asks the model which movie you rated higher. A score of 50 is about chance; 100 means every tested preference was ordered correctly.</p>{calibration.status === "building" ? <p>Your score is building until you have at least eight watched-and-rated movies across more than one rating level.</p> : calibration.status === "ready" ? <p>Your model is ready: it beat the stronger simple baseline and correctly ordered {calibration.predictionScore} out of 100 hidden comparisons.</p> : <p>You have enough data for a score, but the model is currently low confidence and is not influencing recommendations. This is an honest result, not an unfinished calculation.</p>}<p>The graph is a representative view of at most 60 movies. The score uses all {calibration.evaluationCount.toLocaleString()} hidden rating tests from {calibration.trainingCount.toLocaleString()} ratings.</p><small>All training stays on this device. Baseline ordering: {Math.round(calibration.pairwiseBaseline * 100)}/100 · hidden comparisons: {calibration.comparisonCount.toLocaleString()} · typical star error: {calibration.meanAbsoluteError.toFixed(1)} stars versus {Number.isFinite(strongerBaseline) ? strongerBaseline.toFixed(1) : "an unavailable"} baseline · {calibration.selectedModel} · {calibration.modelVersion}</small></section></div>;
 }
 
 function LibraryView(props: { movies: Movie[]; filter: LibraryFilter; setFilter: (filter: LibraryFilter) => void; watchedFilter: LibraryWatchedFilter; setWatchedFilter: (filter: LibraryWatchedFilter) => void; sort: LibrarySort; setSort: (sort: LibrarySort) => void; query: string; setQuery: (value: string) => void; ratings: RatingMap; likes: LikedMap; watched: WatchedMap; watchlist: WatchlistMap; onOpen: (movie: Movie) => void; onAdd: () => void; onImport: (event: ChangeEvent<HTMLInputElement>) => void; onToggleWatched: (movie: Movie) => void; onToggleLike: (movie: Movie) => void }) {

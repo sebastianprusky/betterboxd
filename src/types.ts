@@ -116,9 +116,12 @@ export type RatingPredictionPoint = {
 
 export type RatingPrediction = {
   predictedRating: number;
+  rankingScore?: number;
   rawPredictedRating?: number;
   calibrated?: boolean;
   confidence: number;
+  rankingConfidence?: number;
+  starConfidence?: number;
   neighborCount: number;
   source: "movielens" | "content" | "baseline";
 };

@@ -1,19 +1,14 @@
-# Collaborative recommendation seed
+# Collaborative model gate
 
-`movielens-small-svd64-v1.json` is generated from the official MovieLens
-`latest-small` dataset by `scripts/build_movielens_model.py`. It contains
-deterministic 64-dimensional item factors and support-shrunk co-like neighbors,
-mapped to TMDB IDs through MovieLens `links.csv`.
+No collaborative dataset derivative is bundled into the production site.
+Prediction Model 2.0 uses content features unless a reviewed deployment
+explicitly enables a licensed, versioned model URL.
 
-The browser treats these as fixed movie representations, then learns a
-regularized personal taste vector from the current user's ratings. Factor,
-content, and hybrid ridge models compete in nested held-out tests; predictions
-are enabled only when the winner beats the simple baselines on error and rating
-order. Run the leakage-safe held-out-user benchmark with:
+Run the leakage-safe held-out-user research benchmark with:
 
 ```sh
 npm run benchmark:rating-model -- /path/to/ml-latest-small.zip
 ```
 
-MovieLens data is licensed for research and noncommercial use. Replace this
-provider or obtain permission before monetizing PickAMovie.
+See `docs/MODEL_DATA_AUDIT.md` for the licensing and accuracy gates that must be
+cleared before enabling a collaborative provider.

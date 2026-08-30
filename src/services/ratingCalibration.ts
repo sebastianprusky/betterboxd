@@ -1,13 +1,36 @@
 import type { CollaborativeModel } from "./collaborative";
 import type { InterestMap, LikedMap, Movie, OnboardingPreferences, PickIntentEvent, RatingMap, RatingPrediction, RatingPredictionPoint, TasteStrength, WatchedMap } from "../types";
-import { baselinePredictions, nestedHeldOutPredictions, pairwiseOrderingAccuracy, spearmanCorrelation, trainRatingModelTournament, type RatingTrainingEntry } from "./personalRatingModel";
+import {
+  baselinePredictions,
+  pairwiseComparisonCount,
+  pairwiseOrderingAccuracy,
+  predictWithSnapshot,
+  runRatingModelTournament,
+  spearmanCorrelation,
+  type PersonalModelSnapshot,
+  type RatingTrainingEntry,
+} from "./personalRatingModel";
 
 type RatedMovie = RatingTrainingEntry;
-export const RATING_CALIBRATION_SAMPLE_LIMIT = 60;
+export const RATING_GRAPH_POINT_LIMIT = 60;
+export const RATING_CALIBRATION_SAMPLE_LIMIT = RATING_GRAPH_POINT_LIMIT;
 
-export type RatingCalibration = {
+export type PredictionReadiness = "building" | "low-confidence" | "ready";
+export type PredictionEvaluation = {
+  trainingCount: number;
+  evaluationCount: number;
+  comparisonCount: number;
+  pairwiseBaseline: number;
+  pairwiseConfidenceLow: number;
+  pairwiseConfidenceHigh: number;
+  rankingReady: boolean;
+  starReady: boolean;
+  modelVersion: string;
+};
+
+export type RatingCalibration = PredictionEvaluation & {
   points: RatingPredictionPoint[];
-  status: "building" | "ready";
+  status: PredictionReadiness;
   predictionScore?: number;
   meanAbsoluteError: number;
   conservativeError: number;
@@ -24,67 +47,92 @@ export type RatingCalibration = {
   rankCorrelation: number;
   pairwiseAccuracy: number;
   selectedModel: string;
+  modelSnapshot?: PersonalModelSnapshot;
 };
 
-export function ratingToPercent(rating: number) {
-  return clamp((rating - .5) / 4.5 * 100, 0, 100);
-}
+export function ratingToPercent(rating: number) { return clamp((rating - .5) / 4.5 * 100, 0, 100); }
 
 export function buildRatingCalibration(movies: Movie[], ratings: RatingMap, watched: WatchedMap, model: CollaborativeModel | null = null): RatingCalibration {
-  const eligible = calibrationSample(ratedMovies(movies, ratings, watched));
-  const heldOut = nestedHeldOutPredictions(eligible, model);
-  const points = heldOut.map(({ entry, prediction }) => toPredictionPoint(entry, prediction));
-  const errors = points.map((point) => point.absoluteError);
+  const eligible = ratedMovies(movies, ratings, watched);
+  const distinctRatings = new Set(eligible.map((entry) => entry.rating)).size;
+  const enoughData = eligible.length >= 8 && distinctRatings >= 2;
+  const result = runRatingModelTournament(eligible, model);
+  const heldOut = result.heldOut;
+  const allPoints = heldOut.map(({ entry, prediction }) => toPredictionPoint(entry, prediction));
+  const points = samplePredictionPoints(allPoints, RATING_GRAPH_POINT_LIMIT);
+  const predicted = heldOut.map((row) => row.prediction.predictedRating);
+  const actual = heldOut.map((row) => row.entry.rating);
+  const errors = predicted.map((value, index) => Math.abs(value - actual[index]));
+  const squaredErrors = predicted.map((value, index) => (value - actual[index]) ** 2);
   const meanAbsoluteError = mean(errors);
   const errorStandardError = errors.length > 1 ? standardDeviation(errors) / Math.sqrt(errors.length) : 0;
   const conservativeError = meanAbsoluteError + 1.28 * errorStandardError;
-  const baselineRows = eligible.map((target) => ({ target, ...baselinePredictions(target.movie, eligible.filter((entry) => entry.movie.id !== target.movie.id)) }));
-  const userMeanBaselineErrors = baselineRows.map(({ target, userMean }) => Math.abs(userMean - target.rating));
-  const tmdbBaselineErrors = baselineRows.map(({ target, tmdb }) => Math.abs(tmdb - target.rating));
-  const userMeanBaselineError = mean(userMeanBaselineErrors);
-  const tmdbBaselineError = mean(tmdbBaselineErrors);
-  const predictionSpread = standardDeviation(points.map((point) => point.predictedRating));
-  const actualRatingSpread = standardDeviation(points.map((point) => point.actualRating));
-  const requiredPredictionSpread = actualRatingSpread * .35;
-  const strongerBaseline = Math.min(userMeanBaselineError || Infinity, tmdbBaselineError || Infinity);
-  const benchmarkImprovement = Number.isFinite(strongerBaseline) && strongerBaseline > 0 ? 1 - meanAbsoluteError / strongerBaseline : 0;
-  const squaredErrors = points.map((point) => (point.predictedRating - point.actualRating) ** 2);
-  const userMeanBaselineMse = mean(baselineRows.map(({ target, userMean }) => (userMean - target.rating) ** 2));
-  const tmdbBaselineMse = mean(baselineRows.map(({ target, tmdb }) => (tmdb - target.rating) ** 2));
-  const strongerBaselineMse = Math.min(userMeanBaselineMse || Infinity, tmdbBaselineMse || Infinity);
+
+  const baselineRows = heldOut.map((row) => {
+    const fallback = row.userMeanBaseline === undefined || row.tmdbBaseline === undefined
+      ? baselinePredictions(row.entry.movie, eligible.filter((candidate) => candidate.movie.id !== row.entry.movie.id))
+      : undefined;
+    return { entry: row.entry, userMean: row.userMeanBaseline ?? fallback?.userMean ?? 3.5, tmdb: row.tmdbBaseline ?? fallback?.tmdb ?? 3.5 };
+  });
+  const userMeanPredictions = baselineRows.map((row) => row.userMean);
+  const tmdbPredictions = baselineRows.map((row) => row.tmdb);
+  const userMeanBaselineError = mean(baselineRows.map(({ entry, userMean }) => Math.abs(userMean - entry.rating)));
+  const tmdbBaselineError = mean(baselineRows.map(({ entry, tmdb }) => Math.abs(tmdb - entry.rating)));
+  const strongerStarBaseline = Math.min(userMeanBaselineError || Infinity, tmdbBaselineError || Infinity);
+  const benchmarkImprovement = Number.isFinite(strongerStarBaseline) && strongerStarBaseline > 0 ? 1 - meanAbsoluteError / strongerStarBaseline : 0;
+
+  const pairwiseAccuracy = pairwiseOrderingAccuracy(predicted, actual);
+  const pairwiseBaseline = Math.max(pairwiseOrderingAccuracy(userMeanPredictions, actual), pairwiseOrderingAccuracy(tmdbPredictions, actual));
+  const comparisonCount = pairwiseComparisonCount(actual);
+  const effectiveComparisons = Math.max(1, Math.min(comparisonCount, heldOut.length * 5));
+  const pairwiseStandardError = Math.sqrt(Math.max(.0001, pairwiseAccuracy * (1 - pairwiseAccuracy)) / effectiveComparisons);
+  const pairwiseConfidenceLow = clamp(pairwiseAccuracy - 1.96 * pairwiseStandardError, 0, 1);
+  const pairwiseConfidenceHigh = clamp(pairwiseAccuracy + 1.96 * pairwiseStandardError, 0, 1);
+  const rankingReady = enoughData && pairwiseAccuracy >= .55 && pairwiseConfidenceLow > .5 && pairwiseAccuracy >= pairwiseBaseline + .03;
+  const starReady = rankingReady && Number.isFinite(strongerStarBaseline) && strongerStarBaseline > 0 && meanAbsoluteError <= strongerStarBaseline * .95;
+  const status: PredictionReadiness = !enoughData ? "building" : rankingReady ? "ready" : "low-confidence";
+  const strongerBaselineMse = Math.min(
+    mean(baselineRows.map(({ entry, userMean }) => (userMean - entry.rating) ** 2)) || Infinity,
+    mean(baselineRows.map(({ entry, tmdb }) => (tmdb - entry.rating) ** 2)) || Infinity,
+  );
   const predictiveSkill = Number.isFinite(strongerBaselineMse) && strongerBaselineMse > 0 ? 1 - mean(squaredErrors) / strongerBaselineMse : 0;
-  const rankCorrelation = spearmanCorrelation(points.map((point) => point.predictedRating), points.map((point) => point.actualRating));
-  const pairwiseAccuracy = pairwiseOrderingAccuracy(points.map((point) => point.predictedRating), points.map((point) => point.actualRating));
-  const conservativeRmse = Math.sqrt(mean(squaredErrors)) + 1.28 * errorStandardError;
-  const conservativeSkill = Number.isFinite(strongerBaselineMse) && strongerBaselineMse > 0 ? 1 - conservativeRmse ** 2 / strongerBaselineMse : 0;
-  const benchmarkPassed = points.length >= 8 && Number.isFinite(strongerBaseline) && benchmarkImprovement >= .05
-    && predictiveSkill >= .05 && conservativeSkill > 0 && rankCorrelation >= .2 && pairwiseAccuracy >= .55
-    && predictionSpread + .001 >= requiredPredictionSpread;
-  const selected = trainRatingModelTournament(eligible, model);
+  const predictionSpread = standardDeviation(predicted);
+  const actualRatingSpread = standardDeviation(actual);
+
   return {
     points,
-    status: benchmarkPassed ? "ready" : "building",
-    predictionScore: benchmarkPassed ? Math.round(100 * clamp(conservativeSkill, 0, 1)) : undefined,
+    status,
+    predictionScore: enoughData ? Math.round(pairwiseAccuracy * 100) : undefined,
     meanAbsoluteError: roundTwo(meanAbsoluteError),
     conservativeError: roundTwo(conservativeError),
-    withinHalfStarRate: points.length ? Math.round(points.filter((point) => point.absoluteError <= .5).length / points.length * 100) : 0,
+    withinHalfStarRate: errors.length ? Math.round(errors.filter((error) => error <= .5).length / errors.length * 100) : 0,
     userMeanBaselineError: roundTwo(userMeanBaselineError),
     tmdbBaselineError: roundTwo(tmdbBaselineError),
     predictionSpread: roundTwo(predictionSpread),
     actualRatingSpread: roundTwo(actualRatingSpread),
-    requiredPredictionSpread: roundTwo(requiredPredictionSpread),
+    requiredPredictionSpread: roundTwo(actualRatingSpread * .35),
     benchmarkImprovement: roundTwo(benchmarkImprovement),
-    calibrationApplied: false,
-    benchmarkPassed,
+    calibrationApplied: result.tournament.kind.endsWith("ranker"),
+    benchmarkPassed: rankingReady,
     predictiveSkill: roundTwo(predictiveSkill),
-    rankCorrelation: roundTwo(rankCorrelation),
+    rankCorrelation: roundTwo(spearmanCorrelation(predicted, actual)),
     pairwiseAccuracy: roundTwo(pairwiseAccuracy),
-    selectedModel: selected.label,
+    selectedModel: result.tournament.label,
+    modelSnapshot: result.tournament.snapshot,
+    trainingCount: eligible.length,
+    evaluationCount: heldOut.length,
+    comparisonCount,
+    pairwiseBaseline: roundTwo(pairwiseBaseline),
+    pairwiseConfidenceLow: roundTwo(pairwiseConfidenceLow),
+    pairwiseConfidenceHigh: roundTwo(pairwiseConfidenceHigh),
+    rankingReady,
+    starReady,
+    modelVersion: result.tournament.snapshot.version,
   };
 }
 
-export function createRatingCalibrationSample(ratings: RatingMap, watched: WatchedMap, limit = RATING_CALIBRATION_SAMPLE_LIMIT) {
-  const entries = calibrationSample(ratedMovies([], ratings, watched), limit);
+export function createRatingModelInput(ratings: RatingMap, watched: WatchedMap) {
+  const entries = ratedMovies([], ratings, watched);
   return {
     movies: entries.map((entry) => entry.movie),
     ratings: Object.fromEntries(entries.map((entry) => [entry.movie.id, entry.rating])) as RatingMap,
@@ -92,10 +140,21 @@ export function createRatingCalibrationSample(ratings: RatingMap, watched: Watch
   };
 }
 
-export function predictCandidateRatings(movies: Movie[], ratings: RatingMap, watched: WatchedMap, model: CollaborativeModel | null) {
-  const training = ratedMovies(movies, ratings, watched);
-  const tournament = trainRatingModelTournament(calibrationSample(training), model);
-  return new Map(movies.map((movie) => [movie.id, tournament.predict(movie)]));
+/** Retained for compatibility; sampling is now graph-only, never model training. */
+export function createRatingCalibrationSample(ratings: RatingMap, watched: WatchedMap, limit = RATING_GRAPH_POINT_LIMIT) {
+  const input = createRatingModelInput(ratings, watched);
+  const entries = sampleRatedEntries(ratedMovies(input.movies, input.ratings, input.watched), limit);
+  return {
+    movies: entries.map((entry) => entry.movie),
+    ratings: Object.fromEntries(entries.map((entry) => [entry.movie.id, entry.rating])) as RatingMap,
+    watched: Object.fromEntries(entries.map((entry) => [entry.movie.id, { movie: entry.movie, watchedAt: entry.watchedAt }])) as WatchedMap,
+  };
+}
+
+export function predictCandidateRatings(movies: Movie[], ratings: RatingMap, watched: WatchedMap, model: CollaborativeModel | null, snapshot?: PersonalModelSnapshot) {
+  const training = ratedMovies([], ratings, watched);
+  const activeSnapshot = snapshot || runRatingModelTournament(training, model).tournament.snapshot;
+  return new Map(movies.map((movie) => [movie.id, predictWithSnapshot(activeSnapshot, movie, model, training)]));
 }
 
 export function buildTasteStrength({ movies, ratings, likes, watched, interest, preferences, picks, model }: { movies: Movie[]; ratings: RatingMap; likes: LikedMap; watched: WatchedMap; interest: InterestMap; preferences: OnboardingPreferences; picks: PickIntentEvent[]; model: CollaborativeModel | null }): TasteStrength {
@@ -116,50 +175,48 @@ export function buildTasteStrength({ movies, ratings, likes, watched, interest, 
 function toPredictionPoint(target: RatedMovie, prediction: RatingPrediction): RatingPredictionPoint {
   const actualRating = clamp(target.rating, .5, 5);
   return {
-    movie: target.movie,
-    predictedRating: prediction.predictedRating,
-    actualRating,
+    movie: target.movie, predictedRating: prediction.predictedRating, actualRating,
     absoluteError: roundOne(Math.abs(prediction.predictedRating - actualRating)),
-    x: ratingToPercent(prediction.predictedRating),
-    y: 100 - ratingToPercent(actualRating),
-    confidence: prediction.confidence,
-    neighborCount: prediction.neighborCount,
-    source: prediction.source,
-    calibrated: prediction.calibrated,
+    x: ratingToPercent(prediction.predictedRating), y: 100 - ratingToPercent(actualRating),
+    confidence: prediction.starConfidence ?? prediction.confidence, neighborCount: prediction.neighborCount,
+    source: prediction.source, calibrated: prediction.calibrated,
   };
 }
 
-function ratedMovies(movies: Movie[], ratings: RatingMap, watched: WatchedMap) {
-  const byId = new Map(movies.map((movie) => [movie.id, movie]));
-  return Object.entries(ratings).flatMap(([rawId, rating]) => { const id = Number(rawId); const watchedEntry = watched[id]; const movie = watchedEntry?.movie || byId.get(id); return movie && watchedEntry && rating > 0 ? [{ movie, rating, watchedAt: watchedEntry.watchedAt || 0 }] : []; });
-}
-function calibrationSample(entries: RatedMovie[], limit = RATING_CALIBRATION_SAMPLE_LIMIT) {
-  if (entries.length <= limit) return [...entries].sort((a, b) => b.watchedAt - a.watchedAt || a.movie.id - b.movie.id);
-  const buckets = new Map<number, RatedMovie[]>();
-  entries.forEach((entry) => {
-    const key = Math.round(entry.rating * 2);
-    const bucket = buckets.get(key) || [];
-    bucket.push(entry);
-    buckets.set(key, bucket);
-  });
-  buckets.forEach((bucket) => bucket.sort((left, right) => right.watchedAt - left.watchedAt || left.movie.id - right.movie.id));
+function samplePredictionPoints(points: RatingPredictionPoint[], limit: number) {
+  if (points.length <= limit) return [...points];
+  const buckets = new Map<number, RatingPredictionPoint[]>();
+  points.forEach((point) => { const key = Math.round(point.actualRating * 2); buckets.set(key, [...(buckets.get(key) || []), point]); });
+  buckets.forEach((bucket) => bucket.sort((left, right) => left.movie.id - right.movie.id));
   const keys = [...buckets.keys()].sort((left, right) => left - right);
-  const sampled: RatedMovie[] = [];
+  const sampled: RatingPredictionPoint[] = [];
   for (let row = 0; sampled.length < limit; row += 1) {
     let found = false;
-    for (const key of keys) {
-      const entry = buckets.get(key)?.[row];
-      if (!entry) continue;
-      found = true;
-      sampled.push(entry);
-      if (sampled.length >= limit) break;
-    }
+    for (const key of keys) { const point = buckets.get(key)?.[row]; if (!point) continue; found = true; sampled.push(point); if (sampled.length >= limit) break; }
     if (!found) break;
   }
   return sampled;
 }
+
+function ratedMovies(movies: Movie[], ratings: RatingMap, watched: WatchedMap) {
+  const byId = new Map(movies.map((movie) => [movie.id, movie]));
+  return Object.entries(ratings).flatMap(([rawId, rating]) => {
+    const id = Number(rawId); const watchedEntry = watched[id]; const movie = watchedEntry?.movie || byId.get(id);
+    return movie && watchedEntry && rating > 0 ? [{ movie, rating, watchedAt: watchedEntry.watchedAt || 0 }] : [];
+  });
+}
+
+function sampleRatedEntries(entries: RatedMovie[], limit: number) {
+  if (entries.length <= limit) return [...entries].sort((a, b) => b.watchedAt - a.watchedAt || a.movie.id - b.movie.id);
+  const buckets = new Map<number, RatedMovie[]>();
+  entries.forEach((entry) => { const key = Math.round(entry.rating * 2); buckets.set(key, [...(buckets.get(key) || []), entry]); });
+  buckets.forEach((bucket) => bucket.sort((left, right) => right.watchedAt - left.watchedAt || left.movie.id - right.movie.id));
+  const keys = [...buckets.keys()].sort((left, right) => left - right); const sampled: RatedMovie[] = [];
+  for (let row = 0; sampled.length < limit; row += 1) { let found = false; for (const key of keys) { const entry = buckets.get(key)?.[row]; if (!entry) continue; found = true; sampled.push(entry); if (sampled.length >= limit) break; } if (!found) break; }
+  return sampled;
+}
+
 function decade(year: string) { const parsed = Number(year); return Number.isFinite(parsed) && parsed > 1800 ? `${Math.floor(parsed / 10) * 10}s` : ""; }
-function normalize(value: string) { return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim(); }
 function mean(values: number[]) { return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : 0; }
 function standardDeviation(values: number[]) { const average = mean(values); return values.length ? Math.sqrt(mean(values.map((value) => (value - average) ** 2))) : 0; }
 function clamp(value: number, minimum: number, maximum: number) { return Math.max(minimum, Math.min(maximum, value)); }
